@@ -211,23 +211,54 @@ it("relabels a mounted quiet row when the window wakes after midnight", () => {
   expect(byline()).toHaveTextContent(/^Thursday at 9:05 AM$/);
 });
 
-it("reuses calendar work when a row remounts as the clock advances", () => {
-  const createdAt = new Date(2026, 8, 24, 9, 5).getTime() / 1000;
-  render(<QuietRow createdAt={createdAt} />);
-  cleanup();
-  const calendarWork = vi.spyOn(
-    dateEnvironmentSnapshot().formats.calendar,
-    "formatToParts",
+it.each([false, true])(
+  "reuses date formatting when a row remounts (compact=%s)",
+  (compact) => {
+    const createdAt = new Date(2026, 8, 24, 9, 5).getTime() / 1000;
+    const row = (
+      <>
+        <DayDivider createdAt={createdAt} />
+        <MessageTimestamp createdAt={createdAt} compact={compact} />
+      </>
+    );
+    render(row);
+    cleanup();
+    const formattingWork = Object.values(dateEnvironmentSnapshot().formats)
+      .filter((format) => typeof format !== "string")
+      .flatMap((format) => [
+        // Intl exposes format as a getter, although TypeScript types it as a method.
+        vi.spyOn(format as { readonly format: unknown }, "format", "get"),
+        vi.spyOn(format, "formatToParts"),
+      ]);
+    act(() => vi.advanceTimersByTime(5_000));
+    const { container } = render(row);
+    expect(container.querySelector("[data-day]")).toHaveTextContent(/^Today$/);
+    expect(
+      container.querySelector('time [aria-hidden="true"]'),
+    ).toHaveTextContent(compact ? /^9:05$/ : /^9:05 AM$/);
+    expect(container.querySelector(".sr-only")).toHaveTextContent("2026");
+    // Scrolling a retained message back into view must reuse its calendar work
+    // and formatted labels, even though Date.now() has advanced.
+    for (const work of formattingWork) expect(work).not.toHaveBeenCalled();
+  },
+);
+
+it("keeps cached label variants separate from explicit date overrides", () => {
+  const createdAt = new Date(2026, 8, 23, 9, 5).getTime() / 1000;
+  expect(formatDayGroupLabel(createdAt)).toBe("Yesterday");
+  expect(formatItemTimestamp(createdAt)).toBe("Yesterday");
+  expect(formatItemTimestamp(createdAt, { withTime: true })).toBe(
+    "Yesterday at 9:05 AM",
   );
-  act(() => vi.advanceTimersByTime(5_000));
-  const { container } = render(<QuietRow createdAt={createdAt} />);
-  expect(container.querySelector("[data-day]")).toHaveTextContent(/^Today$/);
-  expect(
-    container.querySelector('time [aria-hidden="true"]'),
-  ).toHaveTextContent(/^9:05 AM$/);
-  // Scrolling a retained message back into view must reuse its calendar work
-  // and the shared current day, even though Date.now() has advanced.
-  expect(calendarWork).not.toHaveBeenCalled();
+  expect(formatDayGroupLabel(createdAt, createdAt)).toBe("Today");
+  expect(formatItemTimestamp(createdAt, { nowSeconds: createdAt })).toBe(
+    "9:05 AM",
+  );
+  expect(formatDayGroupLabel(createdAt)).toBe("Yesterday");
+  expect(formatItemTimestamp(createdAt)).toBe("Yesterday");
+  expect(formatItemTimestamp(createdAt, { withTime: true })).toBe(
+    "Yesterday at 9:05 AM",
+  );
 });
 
 it("keeps a stable snapshot on unchanged checks and releases the app's timer/listeners", () => {

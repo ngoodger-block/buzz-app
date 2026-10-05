@@ -1,6 +1,11 @@
 // Ported from Buzz desktop desktop/src/shared/lib/datetime.test.mjs.
-import { expect, it as test } from "vitest";
-import { formatDayGroupLabel, formatItemTimestamp } from "./datetime";
+import { expect, it as test, vi } from "vitest";
+import {
+  formatDayGroupLabel,
+  formatItemTimestamp,
+  formatFullTimestamp,
+} from "./datetime";
+import { dateEnvironmentSnapshot } from "./date-environment";
 
 const assert = {
   equal: (actual: unknown, expected: unknown, message?: string) =>
@@ -22,6 +27,29 @@ function at(
 }
 
 const NOW = at(2026, 6, 30, 14, 30); // Thu Jul 30 2026, 2:30 PM local
+
+test("bounds retained labels and correctly recomputes evicted full dates", () => {
+  const first = at(2001, 1, 3, 4, 5);
+  const expected = new Date(first * 1000).toLocaleString(undefined, {
+    dateStyle: "full",
+    timeStyle: "long",
+  });
+  expect(formatFullTimestamp(first)).toBe(expected);
+  for (let i = 1; i <= 2048; i++) formatFullTimestamp(first + i);
+  const work = vi.spyOn(
+    dateEnvironmentSnapshot().formats.full as { readonly format: unknown },
+    "format",
+    "get",
+  );
+  try {
+    expect(formatFullTimestamp(first)).toBe(expected);
+    expect(work).toHaveBeenCalledTimes(1);
+    expect(formatFullTimestamp(first)).toBe(expected);
+    expect(work).toHaveBeenCalledTimes(1);
+  } finally {
+    work.mockRestore();
+  }
+});
 
 test("the same calendar day reads Today", () => {
   assert.equal(formatDayGroupLabel(at(2026, 6, 30, 9, 5), NOW), "Today");
