@@ -109,11 +109,26 @@ mod unix {
     use std::collections::BTreeMap;
     use std::os::unix::fs::PermissionsExt;
 
-    fn script(body: &str) -> tempfile::NamedTempFile {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(file.path(), body).unwrap();
-        std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        file
+    struct Script {
+        _directory: tempfile::TempDir,
+        path: std::path::PathBuf,
+    }
+
+    impl Script {
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    fn script(body: &str) -> Script {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("probe");
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Script {
+            _directory: directory,
+            path,
+        }
     }
 
     fn fixture_context(adapter_body: &str, cli_body: &str) -> (tempfile::TempDir, CodexContext) {
