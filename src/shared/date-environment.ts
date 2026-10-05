@@ -83,6 +83,9 @@ function refresh() {
 
 /** The app owns one timer and two listeners, independent of which rows are mounted. */
 export function startDateEnvironment() {
+  // App services are also composed without a browser by headless consumers.
+  if (typeof window === "undefined" || typeof document === "undefined")
+    return () => {};
   let timer: ReturnType<typeof setTimeout> | undefined;
   function schedule() {
     clearTimeout(timer);
