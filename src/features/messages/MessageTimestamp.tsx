@@ -7,12 +7,14 @@ import {
 import { useLocalDay } from "../../shared/use-local-day";
 import styles from "./Messages.module.css";
 
-// Retain only the current locale/zone pair, never message content. Resolve the
-// defaults on each render so a running app still follows OS timezone changes.
+// Retain only the current locale/zone pair, never message content. Share default
+// resolution across synchronous renders, then recheck after yielding.
+let defaultsChecked = false;
 let clockFormat:
   | { locale: string; timeZone: string; clock: Intl.DateTimeFormat }
   | undefined;
 function clock() {
+  if (defaultsChecked && clockFormat) return clockFormat.clock;
   const { locale, timeZone } = new Intl.DateTimeFormat().resolvedOptions();
   if (clockFormat?.locale !== locale || clockFormat.timeZone !== timeZone)
     clockFormat = {
@@ -23,6 +25,10 @@ function clock() {
         minute: "2-digit",
       }),
     };
+  defaultsChecked = true;
+  queueMicrotask(() => {
+    defaultsChecked = false;
+  });
   return clockFormat.clock;
 }
 
