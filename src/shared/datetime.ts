@@ -32,17 +32,19 @@ const WEEKDAY_BAND_DAYS = 7;
  * ten months old to month and year ("Aug 2022"). A group label has to identify
  * its day, so the day is kept and only the year is conditional.
  *
- * `nowSeconds` stays a parameter, not a captured constant: a label rendered
- * before midnight has to say "Yesterday" once the day rolls over.
+ * The shared day updates at midnight. `nowSeconds` can override it for callers
+ * formatting relative to a particular instant.
  */
 export function formatDayGroupLabel(
   unixSeconds: number,
-  nowSeconds = Date.now() / 1_000,
+  nowSeconds?: number,
 ): string {
   const date = new Date(unixSeconds * 1_000);
-  const now = new Date(nowSeconds * 1_000);
   const dateDay = calendarDay(date.getTime());
-  const nowDay = calendarDay(now.getTime());
+  const nowDay =
+    nowSeconds === undefined
+      ? dateEnvironmentSnapshot().day
+      : calendarDay(nowSeconds * 1_000);
   const dayDiff = nowDay.ordinal - dateDay.ordinal;
   const f = dateFormats();
   if (dayDiff === 0) return "Today";
@@ -76,13 +78,15 @@ export function formatItemTimestamp(
   unixSeconds: number,
   {
     withTime = false,
-    nowSeconds = Date.now() / 1_000,
+    nowSeconds,
   }: { withTime?: boolean; nowSeconds?: number } = {},
 ): string {
   const date = new Date(unixSeconds * 1_000);
-  const now = new Date(nowSeconds * 1_000);
   const dateDay = calendarDay(date.getTime());
-  const nowDay = calendarDay(now.getTime());
+  const nowDay =
+    nowSeconds === undefined
+      ? dateEnvironmentSnapshot().day
+      : calendarDay(nowSeconds * 1_000);
   const dayDiff = nowDay.ordinal - dateDay.ordinal;
   const f = dateFormats();
   const time = f.time.format(date);

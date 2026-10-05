@@ -211,6 +211,25 @@ it("relabels a mounted quiet row when the window wakes after midnight", () => {
   expect(byline()).toHaveTextContent(/^Thursday at 9:05 AM$/);
 });
 
+it("reuses calendar work when a row remounts as the clock advances", () => {
+  const createdAt = new Date(2026, 8, 24, 9, 5).getTime() / 1000;
+  render(<QuietRow createdAt={createdAt} />);
+  cleanup();
+  const calendarWork = vi.spyOn(
+    dateEnvironmentSnapshot().formats.calendar,
+    "formatToParts",
+  );
+  act(() => vi.advanceTimersByTime(5_000));
+  const { container } = render(<QuietRow createdAt={createdAt} />);
+  expect(container.querySelector("[data-day]")).toHaveTextContent(/^Today$/);
+  expect(
+    container.querySelector('time [aria-hidden="true"]'),
+  ).toHaveTextContent(/^9:05 AM$/);
+  // Scrolling a retained message back into view must reuse its calendar work
+  // and the shared current day, even though Date.now() has advanced.
+  expect(calendarWork).not.toHaveBeenCalled();
+});
+
 it("keeps a stable snapshot on unchanged checks and releases the app's timer/listeners", () => {
   const snapshot = dateEnvironmentSnapshot();
   const changed = vi.fn();

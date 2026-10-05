@@ -35,9 +35,16 @@ function createFormats(locale: string, timeZone: string) {
   };
 }
 
+type CalendarDay = Readonly<{ key: string; year: number; ordinal: number }>;
+// Retain dates across virtualized row remounts without retaining unbounded history.
+const MAX_CACHED_DAYS = 2048;
+const calendarDays = new WeakMap<
+  Intl.DateTimeFormat,
+  Map<number, CalendarDay>
+>();
 let formats = createFormats(...defaults());
 const listeners = new Set<() => void>();
-let current = { formats, day: calendarDay(Date.now()).key };
+let current = { formats, day: calendarDay(Date.now()) };
 
 function defaults(): [string, string] {
   const { locale, timeZone } = new Intl.DateTimeFormat().resolvedOptions();
@@ -45,18 +52,34 @@ function defaults(): [string, string] {
 }
 
 /** Gregorian day in the cached timezone, including during the delay before a settings refresh. */
-export function calendarDay(milliseconds: number, calendar = formats.calendar) {
+export function calendarDay(
+  milliseconds: number,
+  calendar = formats.calendar,
+): CalendarDay {
+  let cache = calendarDays.get(calendar);
+  if (!cache) {
+    cache = new Map();
+    calendarDays.set(calendar, cache);
+  }
+  const cached = cache.get(milliseconds);
+  if (cached) return cached;
   const parts = calendar.formatToParts(milliseconds);
   const number = (type: string) =>
     Number(parts.find((part) => part.type === type)?.value);
   const year = number("year"),
     month = number("month"),
     day = number("day");
-  return {
+  const result = {
     key: `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
     year,
     ordinal: Date.UTC(year, month - 1, day) / 86_400_000,
   };
+  if (cache.size >= MAX_CACHED_DAYS) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(milliseconds, result);
+  return result;
 }
 
 export function dateEnvironmentSnapshot() {
@@ -74,8 +97,8 @@ function refresh() {
   if (locale !== formats.locale || timeZone !== formats.timeZone) {
     formats = createFormats(locale, timeZone);
   }
-  const day = calendarDay(Date.now()).key;
-  if (formats !== current.formats || day !== current.day) {
+  const day = calendarDay(Date.now());
+  if (formats !== current.formats || day.key !== current.day.key) {
     current = { formats, day };
     for (const listener of listeners) listener();
   }
