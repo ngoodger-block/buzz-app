@@ -1,3 +1,7 @@
+import {
+  calendarDay,
+  dateEnvironmentSnapshot,
+} from "../../shared/date-environment";
 import type {
   ChannelMessage,
   MembershipChange,
@@ -7,9 +11,13 @@ import type {
 export type TimelineRow = ChannelMessage & {
   membershipRows?: readonly ChannelMessage[];
 };
-const sameDay = (a: ChannelMessage, b: ChannelMessage) =>
-  new Date(a.createdAt * 1000).toDateString() ===
-  new Date(b.createdAt * 1000).toDateString();
+const sameDay = (
+  a: ChannelMessage,
+  b: ChannelMessage,
+  calendar: Intl.DateTimeFormat,
+) =>
+  calendarDay(a.createdAt * 1000, calendar).key ===
+  calendarDay(b.createdAt * 1000, calendar).key;
 function compatible(older: MembershipChange, newest: MembershipChange) {
   if (newest.type === "member_joined") return older.type === "member_joined";
   if (newest.type === "member_removed")
@@ -21,6 +29,7 @@ function compatible(older: MembershipChange, newest: MembershipChange) {
  * Messages, local days and adjacent gaps over one hour always break a group. */
 export function membershipRows(
   rows: readonly ChannelMessage[],
+  calendar = dateEnvironmentSnapshot().formats.calendar,
 ): readonly TimelineRow[] {
   const result: TimelineRow[] = [];
   for (let end = rows.length - 1; end >= 0; ) {
@@ -44,7 +53,7 @@ export function membershipRows(
         !candidate ||
         !next ||
         !older ||
-        !sameDay(candidate, next) ||
+        !sameDay(candidate, next, calendar) ||
         next.createdAt - candidate.createdAt > 3600 ||
         !(lifecycle
           ? older.type === "member_joined" &&

@@ -1,4 +1,6 @@
 // biome-ignore-all lint/a11y/noNoninteractiveTabindex: The thread region supports keyboard scrolling and Escape.
+import { useLocalDay } from "../../shared/use-local-day";
+import { calendarDay } from "../../shared/date-environment";
 import { usePanelTabHost } from "../panels/PanelWorkspace";
 import { MessageEditScope } from "./MessageEditScope";
 import { ReplySummary } from "./ReplySummary";
@@ -269,6 +271,7 @@ function ThreadMessages({
   onOpenMediaReview?: ThreadPanelProps["onOpenMediaReview"];
   canOpenLink?: ((target: string) => boolean) | undefined;
 }) {
+  useLocalDay();
   const snapshot = useSyncExternalStore(
     view.subscribe,
     view.snapshot,
@@ -776,8 +779,8 @@ function ThreadMessages({
         previousParent === parent && continuesMessageGroup(previousReply, row);
       const day =
         !previousReply ||
-        new Date(previousReply.createdAt * 1000).toDateString() !==
-          new Date(row.createdAt * 1000).toDateString();
+        calendarDay(previousReply.createdAt * 1000).key !==
+          calendarDay(row.createdAt * 1000).key;
       previousReply =
         children?.length && !expanded.has(row.id) ? undefined : row;
       previousParent = parent;

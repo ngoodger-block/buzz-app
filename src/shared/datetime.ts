@@ -4,53 +4,14 @@
  *
  * The ladder follows the Block writing standard for relative dates, with one
  * deliberate deviation noted on `formatDayGroupLabel`. Formats use the default
- * locale and time zone, resolved on each call, so a running app follows OS
- * changes.
+ * locale and time zone from the shared date environment. Settings checks happen
+ * on app lifecycle events and the visible one-minute timer, never here.
  */
 
-let formats:
-  | {
-      locale: string;
-      timeZone: string;
-      weekday: Intl.DateTimeFormat;
-      weekdayMonthDay: Intl.DateTimeFormat;
-      monthDayYear: Intl.DateTimeFormat;
-      shortWeekdayMonthDay: Intl.DateTimeFormat;
-      shortMonthDayYear: Intl.DateTimeFormat;
-      time: Intl.DateTimeFormat;
-      full: Intl.DateTimeFormat;
-    }
-  | undefined;
+import { calendarDay, dateEnvironmentSnapshot } from "./date-environment";
+
 function dateFormats() {
-  const { locale, timeZone } = new Intl.DateTimeFormat().resolvedOptions();
-  if (formats?.locale !== locale || formats.timeZone !== timeZone) {
-    const format = (options: Intl.DateTimeFormatOptions) =>
-      new Intl.DateTimeFormat(undefined, options);
-    formats = {
-      locale,
-      timeZone,
-      weekday: format({ weekday: "long" }),
-      weekdayMonthDay: format({
-        weekday: "long",
-        month: "long",
-        day: "numeric",
-      }),
-      monthDayYear: format({ month: "long", day: "numeric", year: "numeric" }),
-      shortWeekdayMonthDay: format({
-        weekday: "short",
-        month: "short",
-        day: "numeric",
-      }),
-      shortMonthDayYear: format({
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-      }),
-      time: format({ hour: "numeric", minute: "2-digit" }),
-      full: format({ dateStyle: "full", timeStyle: "long" }),
-    };
-  }
-  return formats;
+  return dateEnvironmentSnapshot().formats;
 }
 
 /** Days in a week, past which the weekday name stops being unambiguous. */
@@ -80,14 +41,16 @@ export function formatDayGroupLabel(
 ): string {
   const date = new Date(unixSeconds * 1_000);
   const now = new Date(nowSeconds * 1_000);
-  const dayDiff = calendarDaysBetween(now, date);
+  const dateDay = calendarDay(date.getTime());
+  const nowDay = calendarDay(now.getTime());
+  const dayDiff = nowDay.ordinal - dateDay.ordinal;
   const f = dateFormats();
   if (dayDiff === 0) return "Today";
   if (dayDiff === 1) return "Yesterday";
   // Bounded below too: a future timestamp (clock skew) must not get a weekday
   // that reads as the recent past.
   if (dayDiff > 1 && dayDiff < WEEKDAY_BAND_DAYS) return f.weekday.format(date);
-  return date.getFullYear() === now.getFullYear()
+  return dateDay.year === nowDay.year
     ? f.weekdayMonthDay.format(date)
     : f.monthDayYear.format(date);
 }
@@ -118,7 +81,9 @@ export function formatItemTimestamp(
 ): string {
   const date = new Date(unixSeconds * 1_000);
   const now = new Date(nowSeconds * 1_000);
-  const dayDiff = calendarDaysBetween(now, date);
+  const dateDay = calendarDay(date.getTime());
+  const nowDay = calendarDay(now.getTime());
+  const dayDiff = nowDay.ordinal - dateDay.ordinal;
   const f = dateFormats();
   const time = f.time.format(date);
   if (dayDiff === 0) return time;
@@ -127,7 +92,7 @@ export function formatItemTimestamp(
       ? "Yesterday"
       : dayDiff > 1 && dayDiff < WEEKDAY_BAND_DAYS
         ? f.weekday.format(date)
-        : date.getFullYear() === now.getFullYear()
+        : dateDay.year === nowDay.year
           ? f.shortWeekdayMonthDay.format(date)
           : f.shortMonthDayYear.format(date);
   return withTime ? `${dayLabel} at ${time}` : dayLabel;
@@ -139,16 +104,12 @@ export function formatFullTimestamp(unixSeconds: number): string {
   return dateFormats().full.format(new Date(unixSeconds * 1_000));
 }
 
-/** Local midnight of the calendar day containing `date`. */
-function startOfLocalDay(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-/** Whole calendar days from `date` to `now`, in local time. Rounded, so a
- * 23- or 25-hour DST day still counts as one day. */
-function calendarDaysBetween(now: Date, date: Date): number {
-  return Math.round(
-    (startOfLocalDay(now).getTime() - startOfLocalDay(date).getTime()) /
-      86_400_000,
-  );
+/** A continuation row's clock, without the day period; uses the same settings as its full date. */
+export function formatCompactTime(unixSeconds: number): string {
+  return dateFormats()
+    .time.formatToParts(unixSeconds * 1_000)
+    .filter((part) => part.type !== "dayPeriod")
+    .map((part) => part.value)
+    .join("")
+    .trim();
 }

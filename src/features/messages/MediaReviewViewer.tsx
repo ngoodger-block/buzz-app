@@ -1,3 +1,5 @@
+import { useLocalDay } from "../../shared/use-local-day";
+import { calendarDay } from "../../shared/date-environment";
 import { MessageEditScope } from "./MessageEditScope";
 import { useReviewSidebarMotion } from "./use-review-sidebar-motion";
 import { readReviewOrigin, useReviewEntrance } from "./use-review-entrance";
@@ -56,6 +58,7 @@ type MediaReviewViewerProps = {
 };
 
 export function MediaReviewViewer(props: MediaReviewViewerProps) {
+  useLocalDay();
   const { session, channelId, messageId } = props;
   const [origin] = useState(() =>
     readReviewOrigin(
@@ -608,9 +611,8 @@ function ReviewComments({
             onOpenLink={() => false}
             day={
               index === 0 ||
-              new Date(
-                (replies[index - 1]?.createdAt ?? 0) * 1000,
-              ).toDateString() !== new Date(row.createdAt * 1000).toDateString()
+              calendarDay((replies[index - 1]?.createdAt ?? 0) * 1000).key !==
+                calendarDay(row.createdAt * 1000).key
             }
             retry={session.messages.retry}
             onOpenMediaReview={(_rowId, attachment, seconds) =>

@@ -33,8 +33,10 @@ import { PagesService } from "../features/pages/service";
 import { bundledPlugins } from "../bundled";
 import { createPluginManager } from "../plugins/manager";
 import { withTimeout } from "../plugins/timeout";
+import { startDateEnvironment } from "../shared/date-environment";
 
 export function createServices() {
+  const stopDateEnvironment = startDateEnvironment();
   const appearance = createAppearance();
   const shortcutBindings = createShortcutBindings();
   const updates = createUpdates();
@@ -108,6 +110,7 @@ export function createServices() {
     appearance,
     updates,
     dispose() {
+      stopDateEnvironment();
       identity?.dispose();
       appearance.dispose();
       updates.dispose();

@@ -1,3 +1,4 @@
+import { calendarDay } from "../../shared/date-environment";
 import type { ChannelMessage } from "../relay/contracts";
 
 export function continuesMessageGroup(
@@ -14,7 +15,7 @@ export function continuesMessageGroup(
     previous.authorId === current.authorId &&
     current.createdAt >= previous.createdAt &&
     current.createdAt - previous.createdAt <= 5 * 60 &&
-    new Date(previous.createdAt * 1000).toDateString() ===
-      new Date(current.createdAt * 1000).toDateString()
+    calendarDay(previous.createdAt * 1000).key ===
+      calendarDay(current.createdAt * 1000).key
   );
 }
