@@ -3,6 +3,7 @@ import {
   canStopAgent,
   createAgentControl,
   savedMessage,
+  type CodexReadiness,
   type HarnessInstallReport,
 } from "./control";
 import { controlFixture } from "./control-testing";
@@ -41,6 +42,51 @@ it("browser is unavailable without any host or runner", async () => {
   await control.refresh();
   expect(control.snapshot().status).toBe("unavailable");
   await expect(control.action("x", "start")).rejects.toThrow("desktop app");
+});
+it("a newer Codex check fences a late begin before it can run", async () => {
+  const fixture = controlFixture();
+  const late = deferred<number>();
+  const result: CodexReadiness = {
+    status: "binding-ready",
+    message: "Binding verified.",
+    adapterVersion: "1.10.0",
+    cliVersion: "0.151.0",
+  };
+  const begin = vi
+    .fn<() => Promise<number>>()
+    .mockReturnValueOnce(late.promise)
+    .mockResolvedValueOnce(2);
+  const run = vi.fn(async () => result);
+  const cancel = vi.fn(async () => {});
+  fixture.host.codexReadiness = { begin, run, cancel };
+  const control = createAgentControl(fixture.host);
+
+  const stale = control.checkCodex?.();
+  const newest = control.checkCodex?.();
+  await newest;
+  late.resolve(1);
+  await stale;
+
+  expect(run).toHaveBeenCalledExactlyOnceWith(2);
+  expect(cancel).toHaveBeenCalledWith(1);
+  expect(control.snapshot().codexReadiness?.result).toEqual(result);
+  control.dispose();
+});
+it("disposing during Codex begin retires the late ticket without running", async () => {
+  const fixture = controlFixture();
+  const late = deferred<number>();
+  const run = vi.fn();
+  const cancel = vi.fn(async () => {});
+  fixture.host.codexReadiness = { begin: () => late.promise, run, cancel };
+  const control = createAgentControl(fixture.host);
+
+  const pending = control.checkCodex?.();
+  control.dispose();
+  late.resolve(7);
+  await pending;
+
+  expect(cancel).toHaveBeenCalledExactlyOnceWith(7);
+  expect(run).not.toHaveBeenCalled();
 });
 it("coalesces reads and cannot replace post-action state with a stale read", async () => {
   const fixture = controlFixture();

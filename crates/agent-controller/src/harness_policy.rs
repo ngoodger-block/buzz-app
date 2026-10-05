@@ -20,6 +20,23 @@ pub struct HarnessConfigurationPolicy {
     pub selector_environment: Option<SelectorEnvironment>,
 }
 
+/// Stable native integration identity. Editable executable names never grant
+/// managed policy or access semantics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HarnessIntegration {
+    /// Bundled Buzz Agent integration.
+    BuzzAgent,
+    /// Bundled Goose integration.
+    Goose,
+    /// Installed Pi adapter integration.
+    Pi,
+    /// Installed Codex CLI and ACP adapter integration.
+    Codex,
+    /// Arbitrary executable without managed semantics.
+    External,
+}
+
 /// Authentication ownership does not imply an API key is required.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,8 +99,8 @@ pub struct SelectorEnvironment {
 }
 
 impl HarnessConfigurationPolicy {
-    /// Existing harness classification only; this grants no executable trust.
-    pub fn for_command(command: &str) -> Self {
+    /// Policy selected by a native-owned integration identity.
+    pub fn for_integration(integration: HarnessIntegration) -> Self {
         let mut policy = Self {
             authentication: AuthenticationPolicy::External,
             provider: ProviderPolicy::External,
@@ -92,8 +109,8 @@ impl HarnessConfigurationPolicy {
             effort_discovery: EffortDiscovery::Unknown,
             selector_environment: None,
         };
-        match harness_kind(command) {
-            Some("buzz-agent") => {
+        match integration {
+            HarnessIntegration::BuzzAgent => {
                 policy.authentication = AuthenticationPolicy::Provider;
                 policy.provider = ProviderPolicy::Selector;
                 policy.selector_environment = Some(SelectorEnvironment {
@@ -101,7 +118,7 @@ impl HarnessConfigurationPolicy {
                     provider: "BUZZ_AGENT_PROVIDER",
                 });
             }
-            Some("goose") => {
+            HarnessIntegration::Goose => {
                 policy.authentication = AuthenticationPolicy::HarnessWithOverrides;
                 policy.provider = ProviderPolicy::Selector;
                 policy.selector_environment = Some(SelectorEnvironment {
@@ -109,14 +126,28 @@ impl HarnessConfigurationPolicy {
                     provider: "GOOSE_PROVIDER",
                 });
             }
-            Some("pi") => {
+            HarnessIntegration::Pi => {
                 policy.authentication = AuthenticationPolicy::HarnessWithOverrides;
                 policy.provider = ProviderPolicy::Discovered;
                 policy.model = ModelRequirement::WithProvider;
             }
-            _ => {}
+            HarnessIntegration::Codex => {
+                policy.authentication = AuthenticationPolicy::External;
+                policy.provider = ProviderPolicy::External;
+            }
+            HarnessIntegration::External => {}
         }
         policy
+    }
+
+    /// Existing harness classification only; this grants no executable trust.
+    pub fn for_command(command: &str) -> Self {
+        Self::for_integration(match harness_kind(command) {
+            Some("buzz-agent") => HarnessIntegration::BuzzAgent,
+            Some("goose") => HarnessIntegration::Goose,
+            Some("pi") => HarnessIntegration::Pi,
+            _ => HarnessIntegration::External,
+        })
     }
 
     /// Validate only at the existing selection/launch admission points.

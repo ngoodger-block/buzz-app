@@ -63,6 +63,7 @@ impl Snapshot {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HarnessOption {
+    id: buzz_agent_controller::HarnessIntegration,
     command: String,
     label: &'static str,
     available: bool,
@@ -204,6 +205,7 @@ fn harness_options(app_data: &std::path::Path) -> Vec<HarnessOption> {
     );
     vec![
         HarnessOption {
+            id: buzz_agent_controller::HarnessIntegration::BuzzAgent,
             command: "buzz-agent".into(),
             configuration_policy: buzz_agent_controller::HarnessConfigurationPolicy::for_command(
                 "buzz-agent",
@@ -227,6 +229,7 @@ fn harness_options(app_data: &std::path::Path) -> Vec<HarnessOption> {
             ][usize::from(cfg!(windows))..],
         },
         HarnessOption {
+            id: buzz_agent_controller::HarnessIntegration::Goose,
             command: "goose".into(),
             configuration_policy: buzz_agent_controller::HarnessConfigurationPolicy::for_command(
                 "goose",
@@ -240,6 +243,7 @@ fn harness_options(app_data: &std::path::Path) -> Vec<HarnessOption> {
             providers: GOOSE_PROVIDERS,
         },
         HarnessOption {
+            id: buzz_agent_controller::HarnessIntegration::Pi,
             configuration_policy: buzz_agent_controller::HarnessConfigurationPolicy::for_command(
                 "buzz-pi-acp",
             ),
@@ -257,6 +261,24 @@ fn harness_options(app_data: &std::path::Path) -> Vec<HarnessOption> {
             update_supported: Some(pi_managed && pi_status == "ready" && !pi_current(app_data)),
             default_args: &[],
             // Pi reports signed-in providers through its model catalog.
+            providers: &[],
+        },
+        HarnessOption {
+            id: buzz_agent_controller::HarnessIntegration::Codex,
+            command: buzz_agent_controller::installed("codex-acp").map_or_else(
+                || "codex-acp".into(),
+                |path| path.to_string_lossy().into_owned(),
+            ),
+            configuration_policy:
+                buzz_agent_controller::HarnessConfigurationPolicy::for_integration(
+                    buzz_agent_controller::HarnessIntegration::Codex,
+                ),
+            label: "Codex",
+            available: false,
+            status: "not-enabled",
+            install_supported: None,
+            update_supported: None,
+            default_args: &[],
             providers: &[],
         },
     ]
@@ -612,6 +634,9 @@ impl AgentHost {
     }
     pub(crate) async fn inherited_workspace(&self) -> Result<Option<String>, String> {
         run(self.clone(), |host| host.controller.inherited_workspace()).await
+    }
+    pub(crate) async fn default_workspace(&self) -> Result<PathBuf, String> {
+        run(self.clone(), |host| Ok(host.workspace.clone())).await
     }
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     pub(crate) async fn waiting_for_pi(&self) -> Result<Vec<String>, String> {

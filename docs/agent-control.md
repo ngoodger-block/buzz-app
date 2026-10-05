@@ -243,6 +243,7 @@ every provider requires an API key.
 | Buzz Agent | Selected provider | Scalar selector | Existing defaults and overrides |
 | Goose | Harness, with provider-specific overrides | Scalar selector | Existing defaults and overrides |
 | Pi | Harness, with provider-specific overrides | Discovered provider selector | A selected provider requires a model |
+| Codex | Codex CLI | External Codex configuration | Unavailable until the later Codex layers |
 | Custom executable | External executable | External configuration | Existing saved value |
 
 Policy does not migrate saved records or change validation timing. Pi selection
@@ -259,9 +260,18 @@ Default/Advanced modes belong to the later Codex persistence layer. Likewise,
 available; it does not mean effort is unsupported. The existing Agent defaults
 effort suggestions remain editable suggestions, not allowed-value validation.
 
-This is PR 1 of the [reviewed Codex harness plan](https://github.com/block/buzz-app/blob/codex/codex-harness-plan/docs/codex-harness-plan.md).
-Codex registration, binding, discovery, connection validation, and mode controls
-are separate layers.
+Settings lists Codex with a stable native integration identity while creation
+remains disabled. Its explicit readiness check binds the installed CLI and ACP
+adapter, verifies the existing CLI login, and reports fixed recovery categories;
+ordinary control snapshots do not launch these probes. A successful check is
+binding evidence only. Later Codex discovery, validation, and execution must
+revalidate the context because authentication and configuration files can change
+without changing their paths. See [Codex binding readiness](codex-binding-readiness.md).
+
+The shared policy is PR 1 and binding readiness is PR 2 of the
+[reviewed Codex harness plan](https://github.com/block/buzz-app/blob/codex/codex-harness-plan/docs/codex-harness-plan.md).
+Discovery, connection validation, persistence, execution, and mode controls
+remain separate layers.
 
 For native acceptance, use the Buzz community in the ordinary development app.
 Open Create, Edit, and Agent defaults for Buzz Agent, Goose, and Pi. Check

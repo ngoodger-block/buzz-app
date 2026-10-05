@@ -30,6 +30,7 @@ const labels = {
   ready: "Ready",
   "cli-needed": "CLI needed",
   "adapter-needed": "Adapter needed",
+  "not-enabled": "Not enabled",
 } as const;
 const commands = [
   ["Pi", "Install Pi", piCommand],
@@ -57,14 +58,45 @@ export function AgentSettings({
     error: piError,
   } = state.piInstall ?? { installing: false, report: null, error: null };
   useEffect(() => {
-    if (active) void control.refresh();
+    if (active) {
+      void control.refresh().then(() => control.checkCodex?.());
+    }
   }, [active, control]);
   const options = state.data?.harnessOptions;
-  const harnesses = (["Buzz Agent", "Goose", "Pi"] as const).map((name) =>
-    options?.find((option) => option.label === name),
+  const existingHarnesses = (["Buzz Agent", "Goose", "Pi"] as const).map(
+    (name) => options?.find((option) => option.label === name),
   );
-  const available = harnesses.every((option) => !!option?.status);
+  const codexOption = options?.find((option) => option.id === "codex");
+  const harnesses = [
+    ...existingHarnesses,
+    ...(codexOption ? [codexOption] : []),
+  ];
+  const available = existingHarnesses.every((option) => !!option?.status);
   const pi = harnesses[2];
+  const codex = state.codexReadiness;
+  const codexStatus =
+    codex?.status === "checking"
+      ? "Checking…"
+      : codex?.status === "error"
+        ? "Check failed"
+        : codex?.result
+          ? {
+              "binding-ready": "Binding verified",
+              "cli-needed": "CLI needed",
+              "adapter-needed": "Adapter needed",
+              "interpreter-needed": "Node needed",
+              "adapter-incompatible": "Adapter incompatible",
+              "cli-incompatible": "CLI incompatible",
+              "signed-out": "Sign-in needed",
+              "configuration-error": "Configuration error",
+              timeout: "Check timed out",
+              "output-limit": "Check failed",
+              "cleanup-failed": "Cleanup failed",
+              "check-failed": "Check failed",
+              unsupported: "Unsupported",
+              cancelled: "Check cancelled",
+            }[codex.result.status]
+          : "Not checked";
   const change = (enabled: boolean) =>
     setError(setRememberAgentsPreference(enabled));
   const copy = async (name: string, command: string) => {
@@ -108,7 +140,10 @@ export function AgentSettings({
                   loading={checking}
                   onClick={() => {
                     setChecking(true);
-                    void control.refresh().finally(() => setChecking(false));
+                    void Promise.allSettled([
+                      control.refresh(),
+                      control.checkCodex?.() ?? Promise.resolve(),
+                    ]).finally(() => setChecking(false));
                   }}
                 />
               </Tooltip>
@@ -143,12 +178,19 @@ export function AgentSettings({
               )}
               <ul aria-labelledby="harnesses-title" className={styles.rows}>
                 {harnesses.map((option) => (
-                  <li key={option?.label} className="py-3 text-body-sm">
+                  <li
+                    key={option?.id ?? option?.label}
+                    className="py-3 text-body-sm"
+                  >
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span>{option?.label}</span>
                       <span className="flex items-center gap-2">
                         <span className="text-secondary">
-                          {option?.status ? labels[option.status] : "Unknown"}
+                          {option?.id === "codex"
+                            ? codexStatus
+                            : option?.status
+                              ? labels[option.status]
+                              : "Unknown"}
                         </span>
                         {option?.label === "Pi" &&
                           (option.status !== "ready" ||
@@ -176,6 +218,20 @@ export function AgentSettings({
                           )}
                       </span>
                     </div>
+                    {option?.id === "codex" &&
+                      ((codex?.status === "checked" && codex.result?.message) ||
+                        codex?.error) && (
+                        <p
+                          role={codex.error ? "alert" : "status"}
+                          className="m-0 mt-2 text-secondary"
+                        >
+                          {codex.error || codex.result?.message}
+                          {codex.status === "checked" &&
+                            codex.result?.adapterVersion &&
+                            codex.result?.cliVersion &&
+                            ` Adapter ${codex.result.adapterVersion}; CLI ${codex.result.cliVersion}.`}
+                        </p>
+                      )}
                     {option?.label === "Pi" &&
                       (installingPi ||
                         piResult?.ready ||

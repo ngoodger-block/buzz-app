@@ -14,6 +14,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   createAgentControl,
   type AgentControlHost,
+  type CodexReadiness,
   type HarnessInstallReport,
 } from "../features/agents/control";
 import { controlFixture } from "../features/agents/control-testing";
@@ -197,6 +198,81 @@ it.each(["cli-needed", "adapter-needed", "ready"] as const)(
     );
   },
 );
+
+it("checks Codex explicitly, hides stale status while checking, and recovers", async () => {
+  const user = userEvent.setup();
+  const fixture = controlFixture();
+  fixture.data.harnessOptions = [
+    {
+      command: "buzz-agent",
+      label: "Buzz Agent",
+      available: true,
+      status: "ready",
+      providers: [],
+    },
+    {
+      command: "goose",
+      label: "Goose",
+      available: true,
+      status: "ready",
+      providers: [],
+    },
+    {
+      command: "buzz-pi-acp",
+      label: "Pi",
+      available: true,
+      status: "ready",
+      providers: [],
+    },
+    {
+      id: "codex",
+      command: "/tools/codex-acp",
+      label: "Codex",
+      available: false,
+      status: "not-enabled",
+      providers: [],
+    },
+  ];
+  let ticket = 0;
+  let complete!: (value: {
+    status: "binding-ready";
+    message: string;
+    adapterVersion: string;
+    cliVersion: string;
+  }) => void;
+  fixture.host.codexReadiness = {
+    begin: async () => ++ticket,
+    cancel: vi.fn(async () => {}),
+    run: vi.fn(async (request): Promise<CodexReadiness> => {
+      if (request === 1)
+        return {
+          status: "signed-out" as const,
+          message: "Sign in with the selected Codex CLI, then check again.",
+        };
+      return new Promise((resolve) => {
+        complete = resolve;
+      });
+    }),
+  };
+  const control = createAgentControl(fixture.host);
+  disposals.push(() => control.dispose());
+  render(<AgentSettings control={control} />, { wrapper: ToastProvider });
+  expect(await screen.findByText("Sign-in needed")).toBeVisible();
+  expect(screen.getByText(/Sign in with the selected Codex CLI/)).toBeVisible();
+
+  await user.click(screen.getByRole("button", { name: "Check again" }));
+  expect(await screen.findByText("Checking…")).toBeVisible();
+  expect(screen.queryByText(/Sign in with the selected Codex CLI/)).toBeNull();
+  complete({
+    status: "binding-ready",
+    message:
+      "CLI, login, and ACP binding verified. Codex agent creation is not enabled yet.",
+    adapterVersion: "1.10.0",
+    cliVersion: "0.151.0",
+  });
+  expect(await screen.findByText("Binding verified")).toBeVisible();
+  expect(screen.getByText(/Adapter 1.10.0; CLI 0.151.0/)).toBeVisible();
+});
 
 it("offers manual copying when clipboard access fails", async () => {
   const user = userEvent.setup();

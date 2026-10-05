@@ -13,6 +13,7 @@ use browser::{
 };
 mod agent_models;
 mod agents;
+mod codex_readiness;
 mod deep_links;
 mod dock;
 #[cfg(test)]
@@ -44,6 +45,9 @@ use relay::{
 };
 mod terminal;
 use agent_models::{agent_models_begin, agent_models_cancel, agent_models_run, ModelHost};
+use codex_readiness::{
+    codex_readiness_begin, codex_readiness_cancel, codex_readiness_run, Host as CodexReadinessHost,
+};
 mod goose_models;
 mod harness_setup;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -381,6 +385,7 @@ async fn update_restart<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         handle.state::<ModelHost>().shutdown();
+        handle.state::<Arc<CodexReadinessHost>>().shutdown()?;
         handle.state::<AgentHost>().shutdown()
     })
     .await
@@ -460,6 +465,9 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         agent_models_begin,
         agent_models_cancel,
         agent_models_run,
+        codex_readiness_begin,
+        codex_readiness_cancel,
+        codex_readiness_run,
         title_bar_double_click,
         notification_show,
         deep_link_take,
@@ -545,6 +553,7 @@ pub fn run() {
         .manage(relay::Uploads::default())
         .register_asynchronous_uri_scheme_protocol("buzz-media", relay::media_protocol)
         .manage(Imports::default())
+        .manage(Arc::new(CodexReadinessHost::default()))
         .manage(HarnessSetup::default())
         .manage(Terminals::default())
         .manage(OAuthCallbackHost::default())
@@ -602,9 +611,10 @@ pub fn run() {
             }
             if let tauri::RunEvent::ExitRequested { api, .. } = &event {
                 app.state::<ModelHost>().shutdown();
-                if app.state::<AgentHost>().shutdown().is_err() {
+                let codex = app.state::<Arc<CodexReadinessHost>>().shutdown();
+                if codex.is_err() || app.state::<AgentHost>().shutdown().is_err() {
                     api.prevent_exit();
-                    eprintln!("Agent shutdown incomplete; app exit was refused");
+                    eprintln!("Agent or Codex readiness shutdown incomplete; app exit was refused");
                 }
             }
             if matches!(event, tauri::RunEvent::Exit) {
@@ -614,6 +624,9 @@ pub fn run() {
                     eprintln!("Terminal shutdown failed: {error}");
                 }
                 app.state::<ModelHost>().shutdown();
+                if app.state::<Arc<CodexReadinessHost>>().shutdown().is_err() {
+                    eprintln!("Codex readiness shutdown could not be confirmed");
+                }
                 if app.state::<AgentHost>().shutdown().is_err() {
                     eprintln!("Native agent shutdown could not be confirmed");
                 }

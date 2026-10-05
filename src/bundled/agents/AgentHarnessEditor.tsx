@@ -50,9 +50,14 @@ export function AgentHarnessEditor({
         customLabel="Custom executable / current value"
         inputLabel="Executable"
         value={draft.command}
-        options={options.map(({ command, label, available }) => ({
+        options={options.map(({ command, label, available, id }) => ({
           value: command,
-          label: available === false ? `${label} (install first)` : label,
+          label:
+            available === false && id === "codex"
+              ? `${label} (coming in a later update)`
+              : available === false
+                ? `${label} (install first)`
+                : label,
           disabled: available === false,
         }))}
         onChange={(command, pickedOption) => {

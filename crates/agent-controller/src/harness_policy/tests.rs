@@ -84,6 +84,19 @@ fn existing_integrations_expose_policy_without_advertising_unimplemented_modes_o
 }
 
 #[test]
+fn codex_policy_requires_explicit_native_identity() {
+    let managed = HarnessConfigurationPolicy::for_integration(HarnessIntegration::Codex);
+    let basename = HarnessConfigurationPolicy::for_command("codex-acp");
+    assert_eq!(managed.authentication, AuthenticationPolicy::External);
+    assert_eq!(managed.provider, ProviderPolicy::External);
+    assert!(managed.supported_modes.is_empty());
+    assert_eq!(managed, basename);
+    // Equality of today's static fields does not turn the basename into an
+    // integration identity; only native registration carries that authority.
+    assert_eq!(HarnessIntegration::Codex, HarnessIntegration::Codex);
+}
+
+#[test]
 fn policy_does_not_migrate_or_reject_legacy_records_on_store_read() {
     for command in [
         "buzz-agent",
