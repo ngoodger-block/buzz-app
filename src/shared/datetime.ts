@@ -59,6 +59,47 @@ function dateFormats() {
   return formats;
 }
 
+type TimestampStrings = Partial<
+  Record<
+    "group" | "item" | "itemWithTime" | "compact" | "full",
+    string | undefined
+  >
+> & { day?: number };
+const MAX_CACHED_TIMESTAMPS = 2048;
+const strings = new Map<number, TimestampStrings>();
+let stringFormats: ReturnType<typeof dateFormats> | undefined;
+
+/** Preserve labels across remounts, while keeping settings checks owned by dateFormats. */
+function timestampStrings(
+  unixSeconds: number,
+  f: ReturnType<typeof dateFormats>,
+  now?: Date,
+): TimestampStrings {
+  if (f !== stringFormats) {
+    strings.clear();
+    stringFormats = f;
+  }
+  let cached = strings.get(unixSeconds);
+  if (!cached) {
+    if (strings.size >= MAX_CACHED_TIMESTAMPS) {
+      const oldest = strings.keys().next().value;
+      if (oldest !== undefined) strings.delete(oldest);
+    }
+    cached = {};
+    strings.set(unixSeconds, cached);
+  }
+  if (now) {
+    const day = startOfLocalDay(now).getTime();
+    if (day !== cached.day) {
+      cached.day = day;
+      cached.group = undefined;
+      cached.item = undefined;
+      cached.itemWithTime = undefined;
+    }
+  }
+  return cached;
+}
+
 /** Days in a week, past which the weekday name stops being unambiguous. */
 const WEEKDAY_BAND_DAYS = 7;
 
@@ -82,20 +123,31 @@ const WEEKDAY_BAND_DAYS = 7;
  */
 export function formatDayGroupLabel(
   unixSeconds: number,
-  nowSeconds = Date.now() / 1_000,
+  nowSeconds?: number,
 ): string {
-  const date = new Date(unixSeconds * 1_000);
-  const now = new Date(nowSeconds * 1_000);
-  const dayDiff = calendarDaysBetween(now, date);
+  const now = new Date((nowSeconds ?? Date.now() / 1_000) * 1_000);
   const f = dateFormats();
-  if (dayDiff === 0) return "Today";
-  if (dayDiff === 1) return "Yesterday";
+  const cached =
+    nowSeconds === undefined
+      ? timestampStrings(unixSeconds, f, now)
+      : undefined;
+  if (cached?.group !== undefined) return cached.group;
+  const date = new Date(unixSeconds * 1_000);
+  const dayDiff = calendarDaysBetween(now, date);
   // Bounded below too: a future timestamp (clock skew) must not get a weekday
   // that reads as the recent past.
-  if (dayDiff > 1 && dayDiff < WEEKDAY_BAND_DAYS) return f.weekday.format(date);
-  return date.getFullYear() === now.getFullYear()
-    ? f.weekdayMonthDay.format(date)
-    : f.monthDayYear.format(date);
+  const label =
+    dayDiff === 0
+      ? "Today"
+      : dayDiff === 1
+        ? "Yesterday"
+        : dayDiff > 1 && dayDiff < WEEKDAY_BAND_DAYS
+          ? f.weekday.format(date)
+          : date.getFullYear() === now.getFullYear()
+            ? f.weekdayMonthDay.format(date)
+            : f.monthDayYear.format(date);
+  if (cached) cached.group = label;
+  return label;
 }
 
 /**
@@ -119,15 +171,24 @@ export function formatItemTimestamp(
   unixSeconds: number,
   {
     withTime = false,
-    nowSeconds = Date.now() / 1_000,
+    nowSeconds,
   }: { withTime?: boolean; nowSeconds?: number } = {},
 ): string {
-  const date = new Date(unixSeconds * 1_000);
-  const now = new Date(nowSeconds * 1_000);
-  const dayDiff = calendarDaysBetween(now, date);
+  const now = new Date((nowSeconds ?? Date.now() / 1_000) * 1_000);
   const f = dateFormats();
+  const cached =
+    nowSeconds === undefined
+      ? timestampStrings(unixSeconds, f, now)
+      : undefined;
+  const variant = withTime ? "itemWithTime" : "item";
+  if (cached?.[variant] !== undefined) return cached[variant];
+  const date = new Date(unixSeconds * 1_000);
+  const dayDiff = calendarDaysBetween(now, date);
   const time = f.time.format(date);
-  if (dayDiff === 0) return time;
+  if (dayDiff === 0) {
+    if (cached) cached[variant] = time;
+    return time;
+  }
   const dayLabel =
     dayDiff === 1
       ? "Yesterday"
@@ -136,13 +197,31 @@ export function formatItemTimestamp(
         : date.getFullYear() === now.getFullYear()
           ? f.shortWeekdayMonthDay.format(date)
           : f.shortMonthDayYear.format(date);
-  return withTime ? `${dayLabel} at ${time}` : dayLabel;
+  const label = withTime ? `${dayLabel} at ${time}` : dayLabel;
+  if (cached) cached[variant] = label;
+  return label;
 }
 
 /** The complete date and time, such as a timestamp's hover text:
  * "Friday, October 2, 2026 at 3:05:09 PM EDT". */
 export function formatFullTimestamp(unixSeconds: number): string {
-  return dateFormats().full.format(new Date(unixSeconds * 1_000));
+  const f = dateFormats();
+  const cached = timestampStrings(unixSeconds, f);
+  cached.full ??= f.full.format(unixSeconds * 1_000);
+  return cached.full;
+}
+
+/** A continuation clock without the day period, using the same settings as its full date. */
+export function formatCompactTime(unixSeconds: number): string {
+  const f = dateFormats();
+  const cached = timestampStrings(unixSeconds, f);
+  cached.compact ??= f.time
+    .formatToParts(unixSeconds * 1_000)
+    .filter((part) => part.type !== "dayPeriod")
+    .map((part) => part.value)
+    .join("")
+    .trim();
+  return cached.compact;
 }
 
 /** Local midnight of the calendar day containing `date`. */

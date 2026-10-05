@@ -4,6 +4,10 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { memo } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DayDivider, MessageTimestamp } from "./MessageTimestamp";
+import {
+  formatDayGroupLabel,
+  formatItemTimestamp,
+} from "../../shared/datetime";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -52,6 +56,56 @@ it("keeps the continuation clock compact without dropping its accessible date", 
     /^9:05$/,
   );
   expect(container.querySelector(".sr-only")).toHaveTextContent("2026");
+});
+
+it.each([false, true])(
+  "reuses formatting across a yield and row remount (compact=%s)",
+  async (compact) => {
+    const createdAt = new Date(2026, 8, 24, 9, 5).getTime() / 1000;
+    const row = (
+      <>
+        <DayDivider createdAt={createdAt} />
+        <MessageTimestamp createdAt={createdAt} compact={compact} />
+      </>
+    );
+    render(row);
+    cleanup();
+    await Promise.resolve();
+    // format is a native getter, although TypeScript declares it as a method.
+    const format = vi.spyOn(
+      Intl.DateTimeFormat.prototype as { readonly format: unknown },
+      "format",
+      "get",
+    );
+    const parts = vi.spyOn(Intl.DateTimeFormat.prototype, "formatToParts");
+    act(() => vi.advanceTimersByTime(5_000));
+    const { container } = render(row);
+    expect(container.querySelector("[data-day]")).toHaveTextContent(/^Today$/);
+    expect(
+      container.querySelector('time [aria-hidden="true"]'),
+    ).toHaveTextContent(compact ? /^9:05$/ : /^9:05 AM$/);
+    expect(container.querySelector(".sr-only")).toHaveTextContent("2026");
+    expect(format).not.toHaveBeenCalled();
+    expect(parts).not.toHaveBeenCalled();
+  },
+);
+
+it("keeps cached label variants separate from explicit date overrides", () => {
+  const createdAt = new Date(2026, 8, 23, 9, 5).getTime() / 1000;
+  expect(formatDayGroupLabel(createdAt)).toBe("Yesterday");
+  expect(formatItemTimestamp(createdAt)).toBe("Yesterday");
+  expect(formatItemTimestamp(createdAt, { withTime: true })).toBe(
+    "Yesterday at 9:05 AM",
+  );
+  expect(formatDayGroupLabel(createdAt, createdAt)).toBe("Today");
+  expect(formatItemTimestamp(createdAt, { nowSeconds: createdAt })).toBe(
+    "9:05 AM",
+  );
+  expect(formatDayGroupLabel(createdAt)).toBe("Yesterday");
+  expect(formatItemTimestamp(createdAt)).toBe("Yesterday");
+  expect(formatItemTimestamp(createdAt, { withTime: true })).toBe(
+    "Yesterday at 9:05 AM",
+  );
 });
 
 it.each([false, true])(
