@@ -256,7 +256,10 @@ read -r done
         let mut request = request(&view, &codex_edit(&root));
         std::fs::write(root.join("reject"), "").unwrap();
         assert_eq!(validate(&view, &request).unwrap_err()["category"], "quota");
-        assert!(invoke(&view, "agent_control_create_prepare", request.clone()).is_err());
+        assert_eq!(
+            invoke(&view, "agent_control_create_prepare", request.clone()).unwrap(),
+            json!({"validationRequired": true})
+        );
         assert!(host.with(|host| Ok(host.creating.is_none())).unwrap());
         assert!(!root.join("store/agents.json").exists());
         assert_eq!(credentials.adds.load(Ordering::SeqCst), 0);
@@ -348,6 +351,9 @@ read -r done
     let proof = validate(&view, &validation).unwrap();
     let mut name_only = codex_edit(&root);
     name_only["name"] = json!("Renamed");
+    let name_validation = json!({"requestId":uuid::Uuid::new_v4().to_string(),"id":expected_id,
+        "expectedRevision":before["revision"],"edit":name_only.clone()});
+    assert!(validate(&view, &name_validation).unwrap().is_null());
     let renamed = invoke(
         &view,
         "agent_control_save",

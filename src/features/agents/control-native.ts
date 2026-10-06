@@ -14,6 +14,12 @@ export function nativeAgentControlHost(): AgentControlHost | null {
       run: (ticket) => invoke("codex_readiness_run", { ticket }),
       cancel: (ticket) => invoke("codex_readiness_cancel", { ticket }),
     },
+    codexValidation: {
+      begin: () => invoke("codex_validation_begin"),
+      run: (ticket, request) =>
+        invoke("codex_validation_run", { ticket, request }),
+      cancel: (ticket) => invoke("codex_validation_cancel", { ticket }),
+    },
     prepareCreate: (requestId, destination, owner, edit, validationProof) =>
       invoke("agent_control_create_prepare", {
         requestId,
@@ -24,6 +30,11 @@ export function nativeAgentControlHost(): AgentControlHost | null {
       }),
     commitCreate: (requestId, edit, auth) =>
       invoke("agent_control_create_commit", { requestId, edit, auth }),
+    createRecovery: () => invoke("agent_control_create_recovery"),
+    resumeCreate: (requestId, edit, auth) =>
+      invoke("agent_control_create_resume", { requestId, edit, auth }),
+    discardCreate: (requestId) =>
+      invoke("agent_control_create_discard", { requestId }),
     publishProfile: (id) => invoke("agent_control_creation_profile", { id }),
     setStartOnAppLaunch: (id, enabled) =>
       invoke("agent_control_start_on_app_launch", { id, enabled }),
@@ -44,8 +55,14 @@ export function nativeAgentControlHost(): AgentControlHost | null {
       });
     },
     installPi: () => invoke("pi_install"),
-    save: (id, expectedRevision, edit) =>
-      invoke("agent_control_save", { id, expectedRevision, edit }),
+    save: (id, expectedRevision, edit, validationRequestId, validationProof) =>
+      invoke("agent_control_save", {
+        id,
+        expectedRevision,
+        edit,
+        ...(validationRequestId ? { validationRequestId } : {}),
+        ...(validationProof ? { validationProof } : {}),
+      }),
     saveDefaults: (edit) => invoke("agent_control_save_defaults", { edit }),
     delete: (id, expectedRevision) =>
       invoke("agent_control_delete", { id, expectedRevision }),

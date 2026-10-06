@@ -247,7 +247,7 @@ pub(crate) async fn codex_validation_run(
     agents: tauri::State<'_, crate::agents::AgentHost>,
     ticket: u64,
     request: Request,
-) -> Result<ValidationProof, ValidationError> {
+) -> Result<Option<ValidationProof>, ValidationError> {
     if !state.current(ticket) {
         return Err(cancelled());
     }
@@ -256,7 +256,11 @@ pub(crate) async fn codex_validation_run(
         ticket,
         armed: true,
     };
-    let admission = prepare(agents.inner(), &request).await?;
+    let Some(admission) = prepare(agents.inner(), &request).await? else {
+        state.cancel(ticket);
+        caller.disarm();
+        return Ok(None);
+    };
     let draft = admission.draft.clone();
     let owner = state.inner().clone();
     let operation = owner.operations.clone();
@@ -311,7 +315,7 @@ pub(crate) async fn codex_validation_run(
         return Err(cancelled());
     }
     let current = prepare(agents.inner(), &request).await?;
-    if current != admission {
+    if current.as_ref() != Some(&admission) {
         owner.finish(ticket);
         return Err(ValidationError::new(
             "stale",
@@ -320,7 +324,7 @@ pub(crate) async fn codex_validation_run(
     }
     let result = owner
         .seal(ticket, admission)
-        .map(|proof| ValidationProof { proof });
+        .map(|proof| Some(ValidationProof { proof }));
     if result.is_ok() {
         caller.disarm();
     }
@@ -330,7 +334,7 @@ pub(crate) async fn codex_validation_run(
 async fn prepare(
     agents: &crate::agents::AgentHost,
     request: &Request,
-) -> Result<Admission, ValidationError> {
+) -> Result<Option<Admission>, ValidationError> {
     if uuid::Uuid::parse_str(&request.request_id).is_err() {
         return Err(invalid());
     }
@@ -345,20 +349,14 @@ async fn prepare(
                 .codex_edit_validation(id.clone(), revision, request.edit.clone())
                 .await
                 .map_err(|_| invalid())?;
-            let admission = edit_admission(&request.request_id, id, revision, draft)
-                .map_err(|_| invalid())?
-                .ok_or_else(invalid)?;
-            Ok(admission)
+            edit_admission(&request.request_id, id, revision, draft).map_err(|_| invalid())
         }
         (None, None, Some(destination), Some(owner)) => {
             let draft = agents
                 .codex_create_validation(request.edit.clone())
                 .await
                 .map_err(|_| invalid())?;
-            let admission = create_admission(&request.request_id, destination, owner, draft)
-                .map_err(|_| invalid())?
-                .ok_or_else(invalid)?;
-            Ok(admission)
+            create_admission(&request.request_id, destination, owner, draft).map_err(|_| invalid())
         }
         _ => Err(invalid()),
     }

@@ -54,6 +54,129 @@ async function chooseOption(page, name) {
   await page.getByRole("option", { name, exact: true }).click();
 }
 
+test("Codex Create supports keyboard selection, model-specific effort, cancellation and retry", async ({
+  page,
+}) => {
+  const server = await createServer({
+    ...config,
+    configFile: false,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0, strictPort: false },
+  });
+  const errors = watchPageErrors(page);
+  await server.listen();
+  try {
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/agent-control.html?codex`,
+    );
+    await page.getByRole("button", { name: "Add agent", exact: true }).click();
+    const dialog = page.getByRole("dialog", {
+      name: "Create agent",
+      exact: true,
+    });
+    await dialog.getByLabel("Name", { exact: true }).fill("Browser Codex");
+
+    const harness = dialog.getByRole("combobox", {
+      name: "Harness",
+      exact: true,
+    });
+    await harness.focus();
+    await page.keyboard.press("Enter");
+    await chooseOption(page, "Codex");
+    await expect(harness).toBeFocused();
+    await expect(dialog.getByLabel("Provider")).toHaveCount(0);
+    await expect(
+      dialog.getByText(/Codex chooses the model and effort/),
+    ).toBeVisible();
+
+    const configuration = dialog.getByRole("combobox", {
+      name: "Codex configuration",
+      exact: true,
+    });
+    await configuration.press("Enter");
+    await chooseOption(page, "Advanced");
+    const model = dialog.getByRole("combobox", {
+      name: "Codex model",
+      exact: true,
+    });
+    await expect(model).toBeEnabled();
+    await model.press("Enter");
+    await chooseOption(page, "Model A");
+    const effort = dialog.getByRole("combobox", {
+      name: "Codex effort",
+      exact: true,
+    });
+    await expect(effort).toBeEnabled();
+    await effort.press("Enter");
+    await chooseOption(page, "High");
+
+    await page.evaluate(() => window.codexControlFixture.mode("wait"));
+    await dialog.getByRole("button", { name: "Create agent" }).click();
+    await expect(dialog.getByText("Testing Codex connection…")).toBeVisible();
+    await dialog.getByRole("button", { name: "Cancel validation" }).click();
+    await expect(dialog.getByRole("alert")).toContainText(
+      "Codex validation was cancelled",
+    );
+    await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue(
+      "Browser Codex",
+    );
+
+    await page.evaluate(() => window.codexControlFixture.mode("success"));
+    await dialog.getByRole("button", { name: "Create agent" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(
+      page.getByRole("article", { name: "Agent Browser Codex", exact: true }),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(
+        () =>
+          window.agentControlFixture.data.agents.filter(
+            (agent) => agent.id === "codex-created",
+          ).length,
+      ),
+    ).toBe(1);
+
+    const created = page.getByRole("article", {
+      name: "Agent Browser Codex",
+      exact: true,
+    });
+    await created
+      .getByRole("button", { name: "Actions for Browser Codex", exact: true })
+      .click();
+    await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+    const editor = page.getByRole("dialog", {
+      name: "Edit agent",
+      exact: true,
+    });
+    await expect(
+      editor.getByRole("combobox", { name: "Harness", exact: true }),
+    ).toContainText("Codex");
+    await expect(
+      editor.getByRole("combobox", {
+        name: "Codex configuration",
+        exact: true,
+      }),
+    ).toContainText("Advanced");
+    await editor
+      .getByLabel("Name", { exact: true })
+      .fill("Browser Codex renamed");
+    await editor.getByRole("button", { name: "Save changes" }).click();
+    await expect(editor).toHaveCount(0);
+    await expect(
+      page.getByRole("article", {
+        name: "Agent Browser Codex renamed",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("article", { name: "Agent Fixture agent", exact: true }),
+    ).toBeVisible();
+    expect(errors.unexplained()).toEqual([]);
+  } finally {
+    await server.close();
+  }
+});
+
 test("agent menu leaves focus in Profile after its close animation", async ({
   page,
 }) => {

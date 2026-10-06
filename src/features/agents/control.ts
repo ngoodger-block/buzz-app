@@ -114,7 +114,12 @@ export interface ControlSnapshot {
     label: string;
     available?: boolean;
     /** Executable presence only; Pi also needs Node.js for its adapter. */
-    status?: "ready" | "cli-needed" | "adapter-needed" | "not-enabled";
+    status?:
+      | "ready"
+      | "cli-needed"
+      | "adapter-needed"
+      | "check-needed"
+      | "not-enabled";
     /** The native installer is available on macOS/Linux, not Windows. */
     installSupported?: boolean;
     /** The selected Pi install is app-owned and older than the pinned adapter. */
@@ -224,6 +229,23 @@ export interface CodexReadiness {
   cliVersion?: string;
 }
 
+export interface CodexCreateRecovery {
+  requestId: string;
+  agentId: string;
+  pubkey: string;
+  destination: string;
+  owner: string;
+}
+
+interface CodexValidationRequest {
+  requestId: string;
+  id?: string;
+  expectedRevision?: number;
+  destination?: string;
+  owner?: string;
+  edit: AgentEdit;
+}
+
 export type CommunityResolution = {
   pubkey: string;
   relayUrl: string;
@@ -245,6 +267,14 @@ export interface AgentControlHost {
     run(ticket: number): Promise<CodexReadiness>;
     cancel(ticket: number): Promise<void>;
   };
+  codexValidation?: {
+    begin(): Promise<number>;
+    run(
+      ticket: number,
+      request: CodexValidationRequest,
+    ): Promise<{ proof: string } | null>;
+    cancel(ticket: number): Promise<void>;
+  };
   installPi?(): Promise<HarnessInstallReport>;
   prepareCreate?(
     requestId: string,
@@ -252,12 +282,24 @@ export interface AgentControlHost {
     owner: string,
     edit: AgentEdit,
     validationProof?: string,
-  ): Promise<{ id: string; pubkey: string; completed?: boolean }>;
+  ): Promise<{
+    id?: string;
+    pubkey?: string;
+    completed?: boolean;
+    validationRequired?: boolean;
+  }>;
   commitCreate?(
     requestId: string,
     edit: AgentEdit,
     auth: string,
   ): Promise<ControlSnapshot>;
+  createRecovery?(): Promise<CodexCreateRecovery | null>;
+  resumeCreate?(
+    requestId: string,
+    edit: AgentEdit,
+    auth: string,
+  ): Promise<ControlSnapshot>;
+  discardCreate?(requestId: string): Promise<void>;
   publishProfile?(id: string): Promise<ControlSnapshot>;
   setStartOnAppLaunch?(id: string, enabled: boolean): Promise<ControlSnapshot>;
   snapshot(): Promise<ControlSnapshot>;
@@ -265,6 +307,8 @@ export interface AgentControlHost {
     id: string,
     expectedRevision: number,
     edit: AgentEdit,
+    validationRequestId?: string,
+    validationProof?: string,
   ): Promise<ControlSnapshot>;
   delete?(id: string, expectedRevision: number): Promise<ControlSnapshot>;
   saveDefaults?(edit: AgentDefaultsEdit): Promise<ControlSnapshot>;
@@ -321,13 +365,28 @@ export interface AgentControl {
     destination: string,
     owner: string,
     edit: AgentEdit,
+    signal?: AbortSignal,
+    onValidated?: () => void,
   ): Promise<AgentView>;
+  createRecovery?(): Promise<CodexCreateRecovery | null>;
+  resumeCreate?(
+    recovery: CodexCreateRecovery,
+    edit: AgentEdit,
+    signal?: AbortSignal,
+  ): Promise<AgentView>;
+  discardCreate?(requestId: string): Promise<void>;
   publishProfile?(id: string): Promise<ControlSnapshot>;
   setStartOnAppLaunch?(id: string, enabled: boolean): Promise<ControlSnapshot>;
   snapshot(): AgentControlState;
   subscribe(listener: () => void): () => void;
   refresh(): Promise<void>;
-  save: AgentControlHost["save"];
+  save(
+    id: string,
+    expectedRevision: number,
+    edit: AgentEdit,
+    signal?: AbortSignal,
+    onValidated?: () => void,
+  ): Promise<ControlSnapshot>;
   delete?(id: string, expectedRevision: number): Promise<ControlSnapshot>;
   saveDefaults?(edit: AgentDefaultsEdit): Promise<ControlSnapshot>;
   action: AgentControlHost["action"];
@@ -369,6 +428,13 @@ export function agentFailureReason(problem: unknown): string {
     : "";
 }
 
+/** A rejected preflight is definitive and safe to correct without refreshing. */
+export function agentSafeFailure(problem: unknown): string {
+  return problem instanceof Error && problem.cause === safeOperation
+    ? problem.message
+    : "";
+}
+
 /** Stop is recovery, not a launch: stale stopped/disabled evidence cannot veto it. */
 export function canStopAgent(state: AgentControlState, id: string): boolean {
   if (
@@ -389,6 +455,28 @@ export function canStopAgent(state: AgentControlState, id: string): boolean {
 
 export const agentControlUnavailable =
   "Local agent controls require the desktop app. This browser cannot run or manage agent processes.";
+
+const safeOperation = Symbol("safe agent operation failure");
+class SafeOperationError extends Error {
+  constructor(message: string) {
+    super(message, { cause: safeOperation });
+  }
+}
+
+function codexValidationMessage(problem: unknown) {
+  if (
+    problem &&
+    typeof problem === "object" &&
+    !(problem instanceof Error) &&
+    "category" in problem &&
+    typeof problem.category === "string" &&
+    "message" in problem &&
+    typeof problem.message === "string"
+  )
+    return problem.message;
+  if (typeof problem === "string") return problem;
+  return "Codex validation could not be confirmed. Correct the settings and try again.";
+}
 
 /** Own once at app composition. Disposing this projection never stops native agents. */
 export function createAgentControl(
@@ -502,6 +590,7 @@ export function createAgentControl(
       apply(result);
       return result;
     } catch (error) {
+      if (error instanceof SafeOperationError) throw error;
       // Host rejects with sanitized user-facing strings, never raw child output.
       const detail =
         typeof error === "string"
@@ -548,8 +637,71 @@ export function createAgentControl(
   };
   const installPi = host?.installPi;
   const codexReadiness = host?.codexReadiness;
+  const codexValidation = host?.codexValidation;
+  const validationTickets = new Set<number>();
   let codexTicket: number | null = null;
   let codexGeneration = 0;
+
+  async function validateCodex(
+    request: CodexValidationRequest,
+    signal?: AbortSignal,
+  ) {
+    if (!codexValidation)
+      throw new SafeOperationError(
+        "Codex validation is unavailable. Rebuild or restart the desktop app and try again.",
+      );
+    if (signal?.aborted)
+      throw new SafeOperationError(
+        "Codex validation was cancelled. Your edits are unchanged.",
+      );
+    let ticket: number;
+    try {
+      ticket = await codexValidation.begin();
+    } catch (problem) {
+      throw new SafeOperationError(codexValidationMessage(problem));
+    }
+    validationTickets.add(ticket);
+    let released = false;
+    let onAbort = () => {};
+    const cancel = () => {
+      if (released) return;
+      released = true;
+      signal?.removeEventListener("abort", onAbort);
+      validationTickets.delete(ticket);
+      void codexValidation.cancel(ticket).catch(() => {});
+    };
+    onAbort = () => cancel();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      if (disposed || signal?.aborted) {
+        cancel();
+        throw new SafeOperationError(
+          "Codex validation was cancelled. Your edits are unchanged.",
+        );
+      }
+      const result = await codexValidation.run(ticket, request);
+      if (disposed || signal?.aborted) {
+        cancel();
+        throw new SafeOperationError(
+          "Codex validation was cancelled. Your edits are unchanged.",
+        );
+      }
+      return {
+        proof: result?.proof,
+        release(consumed: boolean) {
+          signal?.removeEventListener("abort", onAbort);
+          if (released) return;
+          released = true;
+          validationTickets.delete(ticket);
+          if (!consumed) void codexValidation.cancel(ticket).catch(() => {});
+        },
+      };
+    } catch (problem) {
+      cancel();
+      if (problem instanceof SafeOperationError) throw problem;
+      throw new SafeOperationError(codexValidationMessage(problem));
+    }
+  }
   return {
     models,
     ...(host?.readLog
@@ -650,18 +802,58 @@ export function createAgentControl(
             destination: string,
             owner: string,
             edit: AgentEdit,
+            signal?: AbortSignal,
+            onValidated?: () => void,
           ) => {
             let id = "";
             const data = await run(
               async (native) => {
                 if (!native.prepareCreate || !native.commitCreate)
                   throw new Error("Agent creation is unavailable.");
-                const prepared = await native.prepareCreate(
+                if (signal?.aborted)
+                  throw new SafeOperationError(
+                    "Agent creation was cancelled. No new identity was saved.",
+                  );
+                let prepared = await native.prepareCreate(
                   requestId,
                   destination,
                   owner,
                   edit,
                 );
+                if (disposed || signal?.aborted)
+                  throw new SafeOperationError(
+                    "Agent creation was cancelled. No new identity was saved.",
+                  );
+                if (prepared.validationRequired) {
+                  const validated = await validateCodex(
+                    { requestId, destination, owner, edit },
+                    signal,
+                  );
+                  try {
+                    if (signal?.aborted)
+                      throw new SafeOperationError(
+                        "Codex validation was cancelled. No new identity was saved.",
+                      );
+                    onValidated?.();
+                    prepared = await native.prepareCreate(
+                      requestId,
+                      destination,
+                      owner,
+                      edit,
+                      validated.proof,
+                    );
+                    if (disposed || signal?.aborted)
+                      throw new SafeOperationError(
+                        "Agent creation was cancelled. No new identity was saved.",
+                      );
+                    validated.release(true);
+                  } catch (problem) {
+                    validated.release(false);
+                    throw problem;
+                  }
+                }
+                if (!prepared.id || !prepared.pubkey)
+                  throw new Error("Agent creation was not prepared.");
                 id = prepared.id;
                 if (prepared.completed) return native.snapshot();
                 const result = await communityRequest<{ auth: string[] }>(
@@ -669,6 +861,10 @@ export function createAgentControl(
                   "authorize-agent",
                   { pubkey: prepared.pubkey, owner },
                 );
+                if (disposed || signal?.aborted)
+                  throw new SafeOperationError(
+                    "Agent creation was cancelled. The prepared identity was not committed.",
+                  );
                 return native.commitCreate(
                   requestId,
                   edit,
@@ -687,6 +883,77 @@ export function createAgentControl(
               );
             return agent;
           },
+        }
+      : {}),
+    ...(host?.createRecovery
+      ? {
+          createRecovery: async () => {
+            if (disposed) throw new Error(agentControlUnavailable);
+            const recovery = host.createRecovery;
+            if (!recovery) return null;
+            return recovery();
+          },
+        }
+      : {}),
+    ...(host?.resumeCreate
+      ? {
+          resumeCreate: async (
+            recovery: CodexCreateRecovery,
+            edit: AgentEdit,
+            signal?: AbortSignal,
+          ) => {
+            const id = recovery.agentId;
+            const data = await run(
+              async (native) => {
+                if (!native.resumeCreate)
+                  throw new Error("Agent creation recovery is unavailable.");
+                if (signal?.aborted)
+                  throw new SafeOperationError(
+                    "Agent creation recovery was cancelled. The pending request is unchanged.",
+                  );
+                const result = await communityRequest<{ auth: string[] }>(
+                  recovery.destination,
+                  "authorize-agent",
+                  { pubkey: recovery.pubkey, owner: recovery.owner },
+                );
+                if (disposed || signal?.aborted)
+                  throw new SafeOperationError(
+                    "Agent creation recovery was cancelled. The pending request is unchanged.",
+                  );
+                return native.resumeCreate(
+                  recovery.requestId,
+                  edit,
+                  JSON.stringify(result.auth),
+                );
+              },
+              ready,
+              false,
+              undefined,
+              true,
+            );
+            const agent = data.agents.find((candidate) => candidate.id === id);
+            if (!agent)
+              throw new Error(
+                "Creation recovery was not confirmed; refresh agents before trying again.",
+              );
+            return agent;
+          },
+        }
+      : {}),
+    ...(host?.discardCreate
+      ? {
+          discardCreate: (requestId: string) =>
+            run(
+              async (native) => {
+                if (!native.discardCreate)
+                  throw new Error("Agent creation recovery is unavailable.");
+                await native.discardCreate(requestId);
+              },
+              () => {},
+              false,
+              undefined,
+              true,
+            ),
         }
       : {}),
     ...(host?.publishProfile
@@ -723,12 +990,41 @@ export function createAgentControl(
       };
     },
     refresh,
-    save: (id, revision, edit) =>
+    save: (id, revision, edit, signal, onValidated) =>
       // Save may restart running agents and wait on their OS credential
       // prompts; like other credential waits, recovery Stop stays available
       // and a superseded result never replaces the newer Stop's evidence.
       run(
-        (native) => native.save(id, revision, edit),
+        async (native) => {
+          if (edit.harness.integration !== "codex")
+            return native.save(id, revision, edit);
+          const requestId = crypto.randomUUID();
+          const validated = await validateCodex(
+            { requestId, id, expectedRevision: revision, edit },
+            signal,
+          );
+          try {
+            if (signal?.aborted)
+              throw new SafeOperationError(
+                "Codex validation was cancelled. Your edits are unchanged.",
+              );
+            onValidated?.();
+            const saved = validated.proof
+              ? await native.save(
+                  id,
+                  revision,
+                  edit,
+                  requestId,
+                  validated.proof,
+                )
+              : await native.save(id, revision, edit);
+            validated.release(true);
+            return saved;
+          } catch (problem) {
+            validated.release(false);
+            throw problem;
+          }
+        },
         ready,
         false,
         undefined,
@@ -901,6 +1197,9 @@ export function createAgentControl(
       codexGeneration++;
       if (codexTicket !== null)
         void codexReadiness?.cancel(codexTicket).catch(() => {});
+      for (const ticket of validationTickets)
+        void codexValidation?.cancel(ticket).catch(() => {});
+      validationTickets.clear();
       models.dispose();
       generation++;
       listeners.clear();

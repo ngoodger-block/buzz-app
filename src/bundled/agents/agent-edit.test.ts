@@ -56,6 +56,53 @@ it("does not persist build suggestions on untouched save; explicit blanks stay e
   expect(agent.harness.databricks.host).toBe("");
 });
 
+it("does not serialize hidden Databricks settings for managed Codex", () => {
+  const draft = agentDraft(controlFixture().agent);
+  draft.integration = "codex";
+  draft.command = "/tools/codex-acp";
+  draft.args = "[]";
+  draft.provider = "";
+  draft.model = "";
+  draft.configuration = { mode: "default" };
+  draft.databricks = { host: "not-an-origin", filter: "stale" };
+
+  expect(agentEdit(draft).harness.databricks).toBeUndefined();
+  expect(draft.databricks).toEqual({ host: "not-an-origin", filter: "stale" });
+});
+
+it("requires complete Codex modes without adding Default overrides", () => {
+  const draft = agentDraft(controlFixture().agent);
+  draft.integration = "codex";
+  draft.command = "/tools/codex-acp";
+  draft.args = "[]";
+  draft.provider = "";
+  draft.model = "";
+  expect(() => agentEdit(draft)).toThrow("Choose Default or Advanced");
+
+  draft.configuration = { mode: "default" };
+  expect(agentEdit(draft).harness).toMatchObject({
+    integration: "codex",
+    model: "",
+    provider: "",
+    configuration: { mode: "default" },
+  });
+  draft.configuration = {
+    mode: "advanced",
+    effort: { kind: "value", value: "" },
+  };
+  expect(() => agentEdit(draft)).toThrow("Choose a model");
+  draft.model = "model-a";
+  expect(() => agentEdit(draft)).toThrow("Choose an effort level");
+  draft.configuration = {
+    mode: "advanced",
+    effort: { kind: "unsupported" },
+  };
+  expect(agentEdit(draft).harness.configuration).toEqual({
+    mode: "advanced",
+    effort: { kind: "unsupported" },
+  });
+});
+
 it("avatar edits preserve an omitted picture, retain managed artwork, and serialize explicit removal", () => {
   const agent = controlFixture().agent;
   expect(

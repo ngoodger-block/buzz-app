@@ -659,6 +659,11 @@ export function AgentDefaultsCard({
             });
           }}
         />
+        <p className="m-0 text-body-sm text-secondary">
+          Codex is selected per agent. Its Default mode uses the model and
+          effort from the Codex CLI, so these device-wide defaults do not
+          configure Codex.
+        </p>
         <ProviderChoice
           current={current}
           state={state}

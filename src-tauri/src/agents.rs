@@ -275,8 +275,14 @@ fn harness_options(app_data: &std::path::Path) -> Vec<HarnessOption> {
                     buzz_agent_controller::HarnessIntegration::Codex,
                 ),
             label: "Codex",
-            available: false,
-            status: "not-enabled",
+            // The form performs the explicit readiness check. Discovery,
+            // validation, and execution each revalidate the same binding.
+            available: cfg!(unix),
+            status: if cfg!(unix) {
+                "check-needed"
+            } else {
+                "not-enabled"
+            },
             install_supported: None,
             update_supported: None,
             default_args: &[],
@@ -1591,7 +1597,9 @@ pub(crate) async fn agent_control_create_prepare(
         }
         match (&admission, validation_proof.as_deref()) {
             (Some(admission), Some(proof)) => validation.consume(proof, admission)?,
-            (Some(_), None) => return Err("Validate this Codex agent before creating it".into()),
+            (Some(_), None) => {
+                return Ok(serde_json::json!({"validationRequired": true}));
+            }
             (None, Some(_)) => return Err("Codex validation does not match this create".into()),
             (None, None) => {}
         }

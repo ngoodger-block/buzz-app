@@ -1,4 +1,9 @@
-import type { AgentEdit, AgentView } from "../../features/agents/control";
+import type {
+  AgentEdit,
+  AgentView,
+  AiConfiguration,
+  HarnessIntegration,
+} from "../../features/agents/control";
 
 export interface AgentDraft {
   revision: number;
@@ -7,10 +12,12 @@ export interface AgentDraft {
   systemPrompt: string;
   sessionPolicy: "channel" | "thread" | null;
   workspace: string;
+  integration?: HarnessIntegration | undefined;
   command: string;
   args: string;
   model: string;
   provider: string;
+  configuration?: AiConfiguration | undefined;
   environment: Record<string, string | null>;
   databricks?: { host: string; filter: string } | null;
 }
@@ -76,10 +83,16 @@ export function agentDraft(agent: AgentView): AgentDraft {
     systemPrompt: agent.systemPrompt,
     sessionPolicy: agent.sessionPolicy ?? null,
     workspace: agent.workspace,
+    ...(agent.harness.integration
+      ? { integration: agent.harness.integration }
+      : {}),
     command: agent.harness.command,
     args: JSON.stringify(agent.harness.args, null, 2),
     model: agent.harness.model,
     provider: agent.harness.provider,
+    ...(agent.harness.configuration
+      ? { configuration: structuredClone(agent.harness.configuration) }
+      : {}),
     environment: {},
     ...(databricks ? { databricks: { ...databricks } } : {}),
   };
@@ -107,6 +120,31 @@ export function agentEdit(
       "ACP arguments must be nonempty and cannot contain commas.",
     );
   }
+  if (draft.integration === "codex") {
+    if (!draft.configuration)
+      throw new Error("Choose Default or Advanced Codex configuration.");
+    if (draft.provider)
+      throw new Error("Codex uses the provider configured by its CLI.");
+    if (args.length)
+      throw new Error("Codex does not accept custom adapter arguments.");
+    if (draft.configuration.mode === "default" && draft.model)
+      throw new Error("Default Codex configuration cannot select a model.");
+    if (
+      !modelDiscovery &&
+      draft.configuration.mode === "advanced" &&
+      !draft.model.trim()
+    )
+      throw new Error("Choose a model for Advanced Codex configuration.");
+    if (
+      !modelDiscovery &&
+      draft.configuration.mode === "advanced" &&
+      draft.configuration.effort.kind === "value" &&
+      !draft.configuration.effort.value.trim()
+    )
+      throw new Error(
+        "Choose an effort level for Advanced Codex configuration.",
+      );
+  }
   return {
     name: draft.name,
     ...(draft.picture === undefined ? {} : { picture: draft.picture }),
@@ -114,11 +152,17 @@ export function agentEdit(
     sessionPolicy: draft.sessionPolicy,
     workspace: draft.workspace,
     harness: {
+      ...(draft.integration ? { integration: draft.integration } : {}),
       command: draft.command,
       args,
       model: draft.model,
       provider: draft.provider,
-      ...(draft.databricks ? { databricks: { ...draft.databricks } } : {}),
+      ...(draft.configuration
+        ? { configuration: structuredClone(draft.configuration) }
+        : {}),
+      ...(draft.integration !== "codex" && draft.databricks
+        ? { databricks: { ...draft.databricks } }
+        : {}),
     },
     environment: { ...draft.environment },
   };

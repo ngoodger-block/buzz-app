@@ -19,6 +19,7 @@ import {
 import { AgentEnvironmentEditor } from "./AgentEnvironmentEditor";
 import { AgentHarnessEditor } from "./AgentHarnessEditor";
 import { AgentModelPicker } from "./AgentModelPicker";
+import { CodexConfigurationFields } from "./CodexConfigurationFields";
 import { ProviderApiKeyField } from "./ProviderApiKeyField";
 import { harnessOption, harnessPolicy } from "./harness-policy";
 
@@ -51,8 +52,8 @@ function providerApiKey(
   data: AgentControlState["data"],
 ) {
   if (
-    harnessPolicy(data?.harnessOptions, draft.command)?.authentication ===
-    "external"
+    harnessPolicy(data?.harnessOptions, draft.command, draft.integration)
+      ?.authentication === "external"
   )
     return undefined;
   if (draft.command.split("/").at(-1) === "buzz-pi-acp")
@@ -100,11 +101,20 @@ export function AgentSettingsFields({
   const [providerSelection, setProviderSelection] = useState(0);
   const pi = draft.command.split("/").at(-1) === "buzz-pi-acp";
   const goose = isGoose(draft.command);
-  const policy = harnessPolicy(state.data?.harnessOptions, draft.command);
-  const integration = harnessOption(
+  const policy = harnessPolicy(
     state.data?.harnessOptions,
     draft.command,
-  )?.id;
+    draft.integration,
+  );
+  const option = harnessOption(
+    state.data?.harnessOptions,
+    draft.command,
+    draft.integration,
+  );
+  // Codex authority is the persisted native marker, never an executable match.
+  const integration =
+    draft.integration ?? (option?.id === "codex" ? undefined : option?.id);
+  const codex = draft.integration === "codex";
   const globalKeys = state.data?.defaultSettings?.environmentKeys ?? [];
   // Saved and global environment values are write-only; removing an agent's
   // key exposes the global key rather than the visible scalar default.
@@ -273,21 +283,33 @@ export function AgentSettingsFields({
               </p>
             </div>
           )}
-          <AgentModelPicker
-            policy={policy}
-            integration={integration}
-            providerSelection={providerSelection}
-            onPiProviders={setPiProviders}
-            disabled={disabled}
-            id={id}
-            savedRevision={savedRevision}
-            control={control}
-            defaults={state.data?.databricksDefaults}
-            defaultModel={defaultModel}
-            inheritedWorkspace={inheritedWorkspace}
-            draft={draft}
-            onChange={change}
-          />
+          {codex ? (
+            <CodexConfigurationFields
+              id={id}
+              savedRevision={savedRevision}
+              draft={draft}
+              control={control}
+              state={state}
+              disabled={disabled}
+              onChange={change}
+            />
+          ) : (
+            <AgentModelPicker
+              policy={policy}
+              integration={integration}
+              providerSelection={providerSelection}
+              onPiProviders={setPiProviders}
+              disabled={disabled}
+              id={id}
+              savedRevision={savedRevision}
+              control={control}
+              defaults={state.data?.databricksDefaults}
+              defaultModel={defaultModel}
+              inheritedWorkspace={inheritedWorkspace}
+              draft={draft}
+              onChange={change}
+            />
+          )}
           <Select
             label="Conversation context"
             variant="field"
@@ -352,16 +374,18 @@ export function AgentSettingsFields({
                       }
                     />
                   </Field>
-                  <Field label="Arguments (JSON array)">
-                    <Textarea
-                      rows={3}
-                      value={draft.args}
-                      disabled={disabled}
-                      onChange={(event) =>
-                        onChange({ args: event.target.value })
-                      }
-                    />
-                  </Field>
+                  {!codex && (
+                    <Field label="Arguments (JSON array)">
+                      <Textarea
+                        rows={3}
+                        value={draft.args}
+                        disabled={disabled}
+                        onChange={(event) =>
+                          onChange({ args: event.target.value })
+                        }
+                      />
+                    </Field>
+                  )}
                   <AgentEnvironmentEditor
                     keys={environmentKeys}
                     patch={draft.environment}

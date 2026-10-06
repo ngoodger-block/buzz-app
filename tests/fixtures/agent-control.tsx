@@ -28,10 +28,10 @@ import { Button } from "../../src/shared/design-system/ui/Button";
 import { useKeyboardFocusVisibility } from "../../src/shared/design-system/useKeyboardFocusVisibility";
 import "../../src/shared/styles/globals.css";
 
-const avatarPreviewMode = new URLSearchParams(location.search).has("avatars");
-const profilePreviewMode = new URLSearchParams(location.search).has(
-  "profile-panel",
-);
+const fixtureParams = new URLSearchParams(location.search);
+const avatarPreviewMode = fixtureParams.has("avatars");
+const profilePreviewMode = fixtureParams.has("profile-panel");
+const codexPreviewMode = fixtureParams.has("codex");
 // Deliberately public test key, never an account credential.
 const profileKey = new Uint8Array(32).fill(7);
 const profileViewer = getPublicKey(profileKey);
@@ -121,6 +121,7 @@ window.fetch = async (input, init) => {
     profiles.set(id, event);
     return Response.json({ accepted: true, event_id: event.id });
   }
+  if (url.endsWith("/authorize-agent")) return Response.json({ auth: [] });
   // Inventory reads stay on the network so browser tests can route them.
   if (url.endsWith("/agent-inventory")) return networkFetch(input, init);
   throw new Error(`Unexpected fixture request: ${url}`);
@@ -149,6 +150,147 @@ fixture.agent.startOnAppLaunch = false;
 const modelCalls: string[] = [];
 let modelMode = "success";
 let releaseModels: (() => void) | undefined;
+let codexValidationMode: "success" | "quota" | "wait" =
+  fixtureParams.get("validation") === "quota"
+    ? "quota"
+    : fixtureParams.get("validation") === "wait"
+      ? "wait"
+      : "success";
+let releaseCodexValidation: (() => void) | undefined;
+if (codexPreviewMode) {
+  fixture.data.createAvailable = true;
+  fixture.data.defaultWorkspace = "/fixture/workspace";
+  fixture.data.harnessOptions?.push({
+    id: "codex",
+    command: "/fixture/tools/codex-acp",
+    label: "Codex",
+    available: true,
+    status: "check-needed",
+    defaultArgs: [],
+    providers: [],
+    configurationPolicy: {
+      authentication: "external",
+      provider: "external",
+      supportedModes: ["default", "advanced"],
+      model: "optional",
+      effortDiscovery: "modelSpecific",
+      selectorEnvironment: null,
+    },
+  });
+  fixture.host.codexReadiness = {
+    begin: async () => 1,
+    cancel: async () => {},
+    run: async () => ({
+      status: "binding-ready",
+      message: "Synthetic Codex CLI and adapter are ready.",
+      cliVersion: "0.151.0",
+      adapterVersion: "1.10.0",
+    }),
+  };
+  let validationTicket = 0;
+  fixture.host.codexValidation = {
+    begin: async () => ++validationTicket,
+    cancel: async () => releaseCodexValidation?.(),
+    run: async () => {
+      if (codexValidationMode === "wait")
+        await new Promise<void>((resolve) => {
+          releaseCodexValidation = resolve;
+        });
+      if (codexValidationMode === "quota")
+        throw {
+          category: "quota",
+          message: "Synthetic Codex quota prevented validation.",
+        };
+      return { proof: "synthetic-proof" };
+    },
+  };
+  fixture.host.prepareCreate = async (
+    _requestId,
+    _destination,
+    _owner,
+    _edit,
+    validationProof,
+  ) =>
+    validationProof
+      ? { id: "codex-created", pubkey: "cd".repeat(32) }
+      : { validationRequired: true };
+  fixture.host.commitCreate = async (_requestId, edit) => {
+    fixture.data.agents.push({
+      ...structuredClone(fixture.agent),
+      id: "codex-created",
+      pubkey: "cd".repeat(32),
+      name: edit.name,
+      systemPrompt: edit.systemPrompt,
+      workspace: edit.workspace,
+      harness: { ...edit.harness, environmentKeys: [] },
+      enabled: false,
+      status: "stopped",
+      runningRevision: null,
+      profilePending: false,
+    });
+    return structuredClone(fixture.data);
+  };
+  let pendingRecovery = fixtureParams.has("recovery")
+    ? {
+        requestId: "fixture-recovery",
+        agentId: "codex-recovered",
+        pubkey: "bc".repeat(32),
+        destination: "wss://relay.example.test",
+        owner: "de".repeat(32),
+      }
+    : null;
+  fixture.host.createRecovery = async () => structuredClone(pendingRecovery);
+  fixture.host.discardCreate = async (requestId) => {
+    if (pendingRecovery?.requestId !== requestId)
+      throw "Synthetic recovery no longer exists.";
+    pendingRecovery = null;
+  };
+  fixture.host.resumeCreate = async (requestId, edit) => {
+    if (pendingRecovery?.requestId !== requestId)
+      throw "Synthetic recovery no longer exists.";
+    fixture.data.agents.push({
+      ...structuredClone(fixture.agent),
+      id: pendingRecovery.agentId,
+      pubkey: pendingRecovery.pubkey,
+      name: edit.name,
+      systemPrompt: edit.systemPrompt,
+      workspace: edit.workspace,
+      harness: { ...edit.harness, environmentKeys: [] },
+      enabled: false,
+      status: "stopped",
+      runningRevision: null,
+      profilePending: false,
+    });
+    pendingRecovery = null;
+    return structuredClone(fixture.data);
+  };
+  fixture.host.action = async (id, action) => {
+    const agent = fixture.data.agents.find((candidate) => candidate.id === id);
+    if (!agent) throw "Synthetic agent no longer exists.";
+    agent.enabled = action !== "stop";
+    agent.status = action === "stop" ? "stopped" : "running";
+    agent.runningRevision = action === "stop" ? null : agent.revision;
+    return structuredClone(fixture.data);
+  };
+  fixture.host.save = async (id, expectedRevision, edit) => {
+    const agent = fixture.data.agents.find((candidate) => candidate.id === id);
+    if (!agent) throw "Synthetic agent no longer exists.";
+    if (agent.revision !== expectedRevision)
+      throw "Synthetic saved settings changed.";
+    Object.assign(agent, {
+      name: edit.name,
+      systemPrompt: edit.systemPrompt,
+      sessionPolicy: edit.sessionPolicy,
+      workspace: edit.workspace,
+      harness: {
+        ...edit.harness,
+        environmentKeys: agent.harness.environmentKeys,
+      },
+      revision: agent.revision + 1,
+    });
+    return structuredClone(fixture.data);
+  };
+}
 fixture.host.models = {
   begin: async () => {
     modelCalls.push("begin");
@@ -165,6 +307,30 @@ fixture.host.models = {
         releaseModels = resolve;
       });
     if (modelMode === "error") throw "Synthetic connection failure.";
+    if (request.integration === "codex")
+      return {
+        host: "",
+        models: [
+          { id: "model-a", name: "Model A" },
+          { id: "model-b", name: "Model B" },
+        ],
+        modelOverridden: false,
+        disconnected: false,
+        codex: {
+          modelsKnown: true,
+          ...(request.selectedModel
+            ? {
+                effort: {
+                  model: request.selectedModel,
+                  options: [
+                    { id: "medium", name: "Medium" },
+                    { id: "high", name: "High" },
+                  ],
+                },
+              }
+            : {}),
+        },
+      };
     return {
       host: request.host,
       models:
@@ -299,6 +465,14 @@ Object.assign(window, {
       modelMode = value;
     },
     release: () => releaseModels?.(),
+  },
+});
+Object.assign(window, {
+  codexControlFixture: {
+    mode: (value: "success" | "quota" | "wait") => {
+      codexValidationMode = value;
+    },
+    release: () => releaseCodexValidation?.(),
   },
 });
 Object.assign(window, { agentControlFixture: { ...fixture, control } });

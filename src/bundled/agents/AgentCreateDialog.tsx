@@ -2,13 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import { Dialog } from "@base-ui/react/dialog";
 import {
   agentFailureReason,
+  agentSafeFailure,
   type AgentControl,
   type AgentControlState,
+  type CodexCreateRecovery,
   type CloneSettings,
   type AgentView,
 } from "../../features/agents/control";
 import { Button } from "../../shared/design-system/ui/Button";
 import { AgentSettingsFields } from "./AgentSettingsFields";
+import { relayOrigin } from "../../features/communities/destination";
 import {
   agentDraft,
   agentEdit,
@@ -45,7 +48,14 @@ function newAgentDraft(state: AgentControlState): AgentDraft {
   };
 }
 
-type CreatePhase = "creating" | "starting" | "publishing" | "checking";
+type CreatePhase =
+  | "testing"
+  | "recovering"
+  | "discarding"
+  | "creating"
+  | "starting"
+  | "publishing"
+  | "checking";
 
 export function AgentCreateDialog({
   control,
@@ -85,13 +95,45 @@ export function AgentCreateDialog({
   const [nextStep, setNextStep] = useState<"start" | "profile">("start");
   const [error, setError] = useState<string>();
   const [phase, setPhase] = useState<CreatePhase | null>(null);
+  const [recovery, setRecovery] = useState<CodexCreateRecovery | null>(null);
+  const [recoveryLoading, setRecoveryLoading] = useState(
+    !!control.createRecovery,
+  );
+  const active = useRef<AbortController | null>(null);
+  const submitting = useRef(false);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
+    void control
+      .createRecovery?.()
+      .then((pending) => {
+        if (mounted.current) setRecovery(pending);
+      })
+      .catch((problem) => {
+        if (mounted.current)
+          setError(
+            problem instanceof Error
+              ? problem.message
+              : "Couldn’t check pending agent creation.",
+          );
+      })
+      .finally(() => {
+        if (mounted.current) setRecoveryLoading(false);
+      });
     return () => {
       mounted.current = false;
+      active.current?.abort();
     };
-  }, []);
+  }, [control]);
+  let resumable = false;
+  if (recovery?.owner === owner) {
+    try {
+      resumable =
+        relayOrigin(recovery.destination) === relayOrigin(destination);
+    } catch {
+      // Native recovery stays visible and discardable when either target is invalid.
+    }
+  }
   const available = !!(
     destination &&
     owner &&
@@ -101,14 +143,22 @@ export function AgentCreateDialog({
   const runtimeBlocked =
     !state.data?.runtimeAvailable && (!saved || nextStep === "start");
   const busy = phase !== null;
-  const blocked = busy || state.busy || state.status !== "ready";
+  const blocked =
+    busy || recoveryLoading || state.busy || state.status !== "ready";
   const create = async () => {
     if (
+      submitting.current ||
       blocked ||
       runtimeBlocked ||
-      (!saved && (!available || !control.create))
+      (!saved &&
+        (recovery
+          ? !resumable || !control.resumeCreate
+          : !available || !control.create))
     )
       return;
+    submitting.current = true;
+    const request = new AbortController();
+    active.current = request;
     setError(undefined);
     let step: "creating" | "starting" | "publishing" = "creating";
     let agent = saved;
@@ -127,9 +177,26 @@ export function AgentCreateDialog({
             );
           return;
         }
-        setPhase("creating");
-        if (!control.create) return;
-        agent = await control.create(requestId, destination, owner, edit);
+        if (recovery && resumable && control.resumeCreate) {
+          setPhase("recovering");
+          agent = await control.resumeCreate(recovery, edit, request.signal);
+        } else {
+          setPhase(
+            edit.harness.integration === "codex" ? "testing" : "creating",
+          );
+          if (!control.create) return;
+          agent = await control.create(
+            requestId,
+            destination,
+            owner,
+            edit,
+            request.signal,
+            () => {
+              if (mounted.current) setPhase("creating");
+            },
+          );
+        }
+        if (mounted.current) setRecovery(null);
       }
       const created = agent;
       if (!saved && mounted.current) {
@@ -173,6 +240,11 @@ export function AgentCreateDialog({
       if (mounted.current) setPhase("checking");
       await control.refresh();
       if (!mounted.current) return;
+      const safe = agentSafeFailure(problem);
+      if (safe) {
+        setError(safe);
+        return;
+      }
       const detail = agentFailureReason(problem);
       const reason = detail && ` ${detail}`;
       const refreshed = control.snapshot();
@@ -206,14 +278,29 @@ export function AgentCreateDialog({
         );
       }
     } finally {
-      if (mounted.current) setPhase(null);
+      if (active.current === request) active.current = null;
+      submitting.current = false;
+      if (mounted.current) {
+        setPhase(null);
+        if (!agent && control.createRecovery)
+          void control
+            .createRecovery()
+            .then((pending) => {
+              if (mounted.current) setRecovery(pending);
+            })
+            .catch(() => {});
+      }
     }
+  };
+  const close = () => {
+    active.current?.abort();
+    onClose();
   };
   return (
     <Dialog.Root
       open
       onOpenChange={(open) => {
-        if (!open && !dirty && !blocked) onClose();
+        if (!open && !dirty && !blocked) close();
       }}
     >
       <Dialog.Portal>
@@ -278,6 +365,42 @@ export function AgentCreateDialog({
                 an agent.
               </p>
             )}
+            {recovery && (
+              <div className="space-y-2">
+                <p role="status" className="text-body-sm text-secondary">
+                  {resumable
+                    ? "A previous agent creation is ready to resume. Re-enter its original settings, or discard it and start again."
+                    : "A previous agent creation for another community or owner must be discarded before starting this one."}
+                </p>
+                <Button
+                  type="button"
+                  disabled={blocked}
+                  onClick={() => {
+                    if (!control.discardCreate || blocked) return;
+                    setPhase("discarding");
+                    setError(undefined);
+                    void control
+                      .discardCreate(recovery.requestId)
+                      .then(() => {
+                        if (mounted.current) setRecovery(null);
+                      })
+                      .catch((problem) => {
+                        if (mounted.current)
+                          setError(
+                            problem instanceof Error
+                              ? problem.message
+                              : "Couldn’t discard the pending creation.",
+                          );
+                      })
+                      .finally(() => {
+                        if (mounted.current) setPhase(null);
+                      });
+                  }}
+                >
+                  Discard pending creation
+                </Button>
+              </div>
+            )}
             {runtimeBlocked && (
               <p role="alert">
                 This app’s agent runtime is unavailable. Repair or rebuild the
@@ -287,6 +410,9 @@ export function AgentCreateDialog({
             )}
             {busy && (
               <p role="status">
+                {phase === "testing" && "Testing Codex connection…"}
+                {phase === "recovering" && "Resuming agent creation…"}
+                {phase === "discarding" && "Discarding pending creation…"}
                 {phase === "creating" && "Creating agent…"}
                 {phase === "starting" &&
                   `${saved?.name ?? draft.name} was created. Starting it…`}
@@ -309,22 +435,54 @@ export function AgentCreateDialog({
               </Button>
             )}
             <div className="buzz-dialog-actions">
-              <Button onClick={onClose}>
-                {busy || saved ? "Close" : "Cancel"}
+              <Button
+                type="button"
+                onClick={() => {
+                  if (
+                    active.current &&
+                    !saved &&
+                    draft.integration === "codex" &&
+                    phase === "testing"
+                  )
+                    active.current.abort();
+                  else close();
+                }}
+              >
+                {active.current &&
+                !saved &&
+                draft.integration === "codex" &&
+                phase === "testing"
+                  ? "Cancel validation"
+                  : busy || saved
+                    ? "Close"
+                    : "Cancel"}
               </Button>
               <Button
                 type="submit"
                 variant="primary"
-                disabled={blocked || runtimeBlocked || (!saved && !available)}
+                disabled={
+                  blocked ||
+                  runtimeBlocked ||
+                  (!saved &&
+                    (recovery
+                      ? !resumable || !control.resumeCreate
+                      : !available))
+                }
               >
                 {busy
-                  ? phase === "starting"
-                    ? "Starting…"
-                    : phase === "publishing"
-                      ? "Finishing…"
-                      : phase === "checking"
-                        ? "Checking…"
-                        : "Creating…"
+                  ? phase === "testing"
+                    ? "Testing…"
+                    : phase === "recovering"
+                      ? "Resuming…"
+                      : phase === "discarding"
+                        ? "Discarding…"
+                        : phase === "starting"
+                          ? "Starting…"
+                          : phase === "publishing"
+                            ? "Finishing…"
+                            : phase === "checking"
+                              ? "Checking…"
+                              : "Creating…"
                   : saved
                     ? nextStep === "start"
                       ? "Start agent"

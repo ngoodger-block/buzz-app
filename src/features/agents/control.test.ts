@@ -37,6 +37,17 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+function codexEdit() {
+  const draft = agentDraft(controlFixture().agent);
+  draft.integration = "codex";
+  draft.command = "/tools/codex-acp";
+  draft.args = "[]";
+  draft.provider = "";
+  draft.model = "";
+  draft.configuration = { mode: "default" };
+  return agentEdit(draft);
+}
 it("returns the completed native request without authorizing or committing another agent", async () => {
   const fixture = controlFixture();
   fixture.host.prepareCreate = vi.fn(async () => ({
@@ -58,6 +69,196 @@ it("returns the completed native request without authorizing or committing anoth
   expect(fixture.host.commitCreate).not.toHaveBeenCalled();
   control.dispose();
 });
+
+it("validates Codex before identity preparation and leaves a successful proof for native consumption", async () => {
+  const fixture = controlFixture();
+  const prepare = vi
+    .fn()
+    .mockResolvedValueOnce({ validationRequired: true })
+    .mockResolvedValueOnce({
+      id: fixture.agent.id,
+      pubkey: fixture.agent.pubkey,
+    });
+  const commit = vi.fn(async () => structuredClone(fixture.data));
+  const cancel = vi.fn(async () => {});
+  fixture.host.prepareCreate = prepare;
+  fixture.host.commitCreate = commit;
+  fixture.host.codexValidation = {
+    begin: vi.fn(async () => 7),
+    run: vi.fn(async () => ({ proof: "sealed" })),
+    cancel,
+  };
+  vi.spyOn(communityApi, "communityRequest").mockResolvedValue({ auth: [] });
+  const control = createAgentControl(fixture.host);
+  await control.refresh();
+
+  await control.create?.(
+    "request",
+    fixture.agent.relayUrl,
+    "owner",
+    codexEdit(),
+  );
+
+  expect(prepare).toHaveBeenNthCalledWith(
+    1,
+    "request",
+    fixture.agent.relayUrl,
+    "owner",
+    expect.anything(),
+  );
+  expect(prepare).toHaveBeenNthCalledWith(
+    2,
+    "request",
+    fixture.agent.relayUrl,
+    "owner",
+    expect.anything(),
+    "sealed",
+  );
+  expect(commit).toHaveBeenCalledOnce();
+  expect(cancel).not.toHaveBeenCalled();
+  control.dispose();
+});
+
+it("cancels a late validation begin on disposal before inference or creation", async () => {
+  const fixture = controlFixture();
+  const began = deferred<number>();
+  const run = vi.fn();
+  const cancel = vi.fn(async () => {});
+  fixture.host.prepareCreate = vi.fn(async () => ({
+    validationRequired: true,
+  }));
+  fixture.host.commitCreate = vi.fn();
+  fixture.host.codexValidation = {
+    begin: vi.fn(() => began.promise),
+    run,
+    cancel,
+  };
+  const control = createAgentControl(fixture.host);
+  await control.refresh();
+  const creating = control
+    .create?.("request", fixture.agent.relayUrl, "owner", codexEdit())
+    .catch(() => {});
+  await vi.waitFor(() =>
+    expect(fixture.host.codexValidation?.begin).toHaveBeenCalledOnce(),
+  );
+  control.dispose();
+  began.resolve(9);
+  await creating;
+
+  expect(cancel).toHaveBeenCalledExactlyOnceWith(9);
+  expect(run).not.toHaveBeenCalled();
+  expect(fixture.host.commitCreate).not.toHaveBeenCalled();
+});
+
+it.each(["prepare", "authorize"] as const)(
+  "an abort during Codex %s prevents a late create commit",
+  async (held) => {
+    const fixture = controlFixture();
+    const prepared = deferred<{ id: string; pubkey: string }>();
+    const authorized = deferred<{ auth: string[] }>();
+    fixture.host.prepareCreate = vi
+      .fn()
+      .mockResolvedValueOnce({ validationRequired: true })
+      .mockImplementationOnce(() =>
+        held === "prepare"
+          ? prepared.promise
+          : Promise.resolve({
+              id: fixture.agent.id,
+              pubkey: fixture.agent.pubkey,
+            }),
+      );
+    fixture.host.commitCreate = vi.fn();
+    const cancel = vi.fn(async () => {});
+    fixture.host.codexValidation = {
+      begin: vi.fn(async () => 3),
+      run: vi.fn(async () => ({ proof: "sealed" })),
+      cancel,
+    };
+    const authorize = vi
+      .spyOn(communityApi, "communityRequest")
+      .mockImplementation(() => authorized.promise);
+    const control = createAgentControl(fixture.host);
+    await control.refresh();
+    const abort = new AbortController();
+    const creating = control
+      .create?.(
+        "request",
+        fixture.agent.relayUrl,
+        "owner",
+        codexEdit(),
+        abort.signal,
+      )
+      .catch(() => {});
+    if (held === "prepare") {
+      await vi.waitFor(() =>
+        expect(fixture.host.prepareCreate).toHaveBeenCalledTimes(2),
+      );
+    } else {
+      await vi.waitFor(() => expect(authorize).toHaveBeenCalledOnce());
+    }
+    abort.abort();
+    if (held === "prepare")
+      prepared.resolve({
+        id: fixture.agent.id,
+        pubkey: fixture.agent.pubkey,
+      });
+    else authorized.resolve({ auth: [] });
+    await creating;
+
+    expect(fixture.host.commitCreate).not.toHaveBeenCalled();
+    expect(control.snapshot().status).toBe("ready");
+    expect(control.snapshot().error).toBeNull();
+    control.dispose();
+  },
+);
+
+it("lets native skip inference for a Codex name-only save", async () => {
+  const fixture = controlFixture();
+  const save = vi.spyOn(fixture.host, "save");
+  const cancel = vi.fn(async () => {});
+  fixture.host.codexValidation = {
+    begin: vi.fn(async () => 5),
+    run: vi.fn(async () => null),
+    cancel,
+  };
+  const control = createAgentControl(fixture.host);
+  await control.refresh();
+  await control.save(fixture.agent.id, fixture.agent.revision, codexEdit());
+
+  expect(save).toHaveBeenCalledWith(fixture.agent.id, 1, expect.anything());
+  expect(cancel).not.toHaveBeenCalled();
+  control.dispose();
+});
+
+it.each([
+  ["authentication", "Sign in with Codex and validate again."],
+  ["quota", "Codex account quota prevented validation."],
+  ["model", "Codex did not accept the selected model."],
+  ["network", "Codex could not reach its service."],
+] as const)(
+  "keeps the native Codex %s failure meaning without entering unconfirmed status",
+  async (category, message) => {
+    const fixture = controlFixture();
+    const save = vi.spyOn(fixture.host, "save");
+    fixture.host.codexValidation = {
+      begin: vi.fn(async () => 11),
+      run: vi.fn(async () => {
+        throw { category, message };
+      }),
+      cancel: vi.fn(async () => {}),
+    };
+    const control = createAgentControl(fixture.host);
+    await control.refresh();
+
+    await expect(
+      control.save(fixture.agent.id, fixture.agent.revision, codexEdit()),
+    ).rejects.toThrow(message);
+    expect(save).not.toHaveBeenCalled();
+    expect(control.snapshot().status).toBe("ready");
+    expect(control.snapshot().error).toBeNull();
+    control.dispose();
+  },
+);
 it("browser is unavailable without any host or runner", async () => {
   const control = createAgentControl(null);
   await control.refresh();

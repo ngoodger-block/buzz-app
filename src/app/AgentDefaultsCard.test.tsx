@@ -66,6 +66,7 @@ it("uses harness provider choices, preserves custom IDs, and clears incompatible
   });
   await control.refresh();
   const card = await screen.findByRole("region", { name: "Agent defaults" });
+  expect(within(card).getByText(/Codex is selected per agent/i)).toBeVisible();
   await user.click(
     within(card).getByRole("combobox", { name: "Default provider" }),
   );

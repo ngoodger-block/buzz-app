@@ -30,6 +30,7 @@ const labels = {
   ready: "Ready",
   "cli-needed": "CLI needed",
   "adapter-needed": "Adapter needed",
+  "check-needed": "Check needed",
   "not-enabled": "Not enabled",
 } as const;
 const commands = [

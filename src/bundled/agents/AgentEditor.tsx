@@ -53,11 +53,15 @@ export function AgentEditor({
 }) {
   const notify = useToastNotification();
   const [uploading, setUploading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const saveRequest = useRef<AbortController | null>(null);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      saveRequest.current?.abort();
     };
   }, []);
   const [draft, setDraft] = useState<AgentDraft | null>(initialDraft ?? null);
@@ -67,14 +71,16 @@ export function AgentEditor({
   const dirty = draft !== null;
   const stale = current.revision !== agent.revision;
   const blocked =
-    disabled || state.busy || uploading || state.status !== "ready";
+    disabled || saving || state.busy || uploading || state.status !== "ready";
   const picture = current.picture ?? agent.picture ?? avatar ?? "";
   const preview = useAvatarPreview(
     state.data?.avatarEditingAvailable ? "" : picture,
     agent.relayUrl,
   );
   const canClose =
-    !state.busy || !!(state.pendingLaunch || state.pendingCredentialWrite);
+    saving ||
+    !state.busy ||
+    !!(state.pendingLaunch || state.pendingCredentialWrite);
   const launchBlocked = disabled || !!agentLaunchBlock(state, agent) || dirty;
   const unapplied =
     agent.runningRevision !== null && agent.runningRevision !== agent.revision;
@@ -93,11 +99,16 @@ export function AgentEditor({
     setError(null);
     setNotice(null);
   };
+  const close = () => {
+    saveRequest.current?.abort();
+    onClose();
+  };
+  const cancelValidation = () => saveRequest.current?.abort();
   return (
     <Dialog.Root
       open
       onOpenChange={(open) => {
-        if (!open && !dirty && !uploading && canClose) onClose();
+        if (!open && !dirty && !uploading && canClose) close();
       }}
     >
       <Dialog.Portal>
@@ -114,7 +125,7 @@ export function AgentEditor({
               icon={<XIcon size={16} aria-hidden="true" />}
               aria-label="Close editor"
               disabled={!canClose}
-              onClick={onClose}
+              onClick={close}
             />
           </header>
           <Dialog.Description className="sr-only">
@@ -138,8 +149,15 @@ export function AgentEditor({
                 setError((problem as Error).message);
                 return;
               }
+              if (saveRequest.current) return;
+              const request = new AbortController();
+              saveRequest.current = request;
+              setSaving(true);
+              setValidating(current.integration === "codex");
               void control
-                .save(agent.id, current.revision, edit)
+                .save(agent.id, current.revision, edit, request.signal, () => {
+                  if (mounted.current) setValidating(false);
+                })
                 .then(async (saved) => {
                   if (!mounted.current) return;
                   setDraft(null);
@@ -171,7 +189,17 @@ export function AgentEditor({
                   notify(message, "success");
                   onClose();
                 })
-                .catch((problem: Error) => setError(problem.message));
+                .catch((problem: Error) => {
+                  if (mounted.current) setError(problem.message);
+                })
+                .finally(() => {
+                  if (saveRequest.current === request)
+                    saveRequest.current = null;
+                  if (mounted.current) {
+                    setSaving(false);
+                    setValidating(false);
+                  }
+                });
             }}
           >
             {children}
@@ -326,6 +354,11 @@ export function AgentEditor({
                 {state.error ?? error}
               </p>
             )}
+            {saving && (
+              <p role="status" className="text-secondary">
+                {validating ? "Testing Codex connection…" : "Saving changes…"}
+              </p>
+            )}
             {agent.profilePending && (
               <Button
                 disabled={
@@ -369,8 +402,12 @@ export function AgentEditor({
               </p>
             )}
             <div className="buzz-dialog-actions">
-              <Button disabled={!canClose} onClick={onClose}>
-                Cancel
+              <Button
+                type="button"
+                disabled={!canClose}
+                onClick={validating ? cancelValidation : close}
+              >
+                {validating ? "Cancel validation" : "Cancel"}
               </Button>
               {stale && (
                 <Button disabled={state.busy} onClick={discard}>

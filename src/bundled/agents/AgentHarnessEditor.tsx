@@ -29,8 +29,8 @@ export function AgentHarnessEditor({
   onChange(patch: Partial<AgentDraft>): void;
   onProviderSelected?(): void;
 }) {
-  const harness = harnessOption(options, draft.command);
-  const policy = harnessPolicy(options, draft.command);
+  const harness = harnessOption(options, draft.command, draft.integration);
+  const policy = harnessPolicy(options, draft.command, draft.integration);
   // Missing policy preserves older hosts; native policy wins whenever supplied.
   const external = policy
     ? policy.authentication === "harnessWithOverrides"
@@ -68,6 +68,9 @@ export function AgentHarnessEditor({
             : option?.label === "Goose" || option?.label === "Pi";
           onChange({
             command,
+            ...(pickedOption
+              ? { integration: option?.id }
+              : { integration: undefined, configuration: undefined }),
             ...(pickedOption && (enteringExternal || external)
               ? {
                   args: JSON.stringify(option?.defaultArgs ?? []),
@@ -77,6 +80,16 @@ export function AgentHarnessEditor({
                   model: "",
                 }
               : {}),
+            ...(pickedOption && option?.id === "codex"
+              ? {
+                  args: "[]",
+                  provider: "",
+                  model: "",
+                  configuration: { mode: "default" },
+                }
+              : pickedOption && draft.integration === "codex"
+                ? { configuration: undefined }
+                : {}),
           });
         }}
       />
@@ -102,32 +115,34 @@ export function AgentHarnessEditor({
           )}
         </div>
       )}
-      <ConfigChoice
-        disabled={disabled || piLoading}
-        key={harness?.label ?? draft.command}
-        label={external ? "LLM Provider" : "Provider"}
-        customLabel="Custom provider / current value"
-        inputLabel="Custom provider"
-        value={draft.provider}
-        options={[
-          {
-            value: "",
-            label: defaultProvider
-              ? `Use agent defaults (${defaultProvider})`
-              : "Not set",
-          },
-          ...(discoveredProviders
-            ? piOptions(piProviders, draft.provider)
-            : (harness?.providers ?? [])),
-        ]}
-        onChange={(provider, pickedOption) => {
-          onChange({
-            provider,
-            ...(external ? { model: "" } : {}),
-          });
-          if (pickedOption) onProviderSelected?.();
-        }}
-      />
+      {policy?.provider !== "external" && (
+        <ConfigChoice
+          disabled={disabled || piLoading}
+          key={harness?.label ?? draft.command}
+          label={external ? "LLM Provider" : "Provider"}
+          customLabel="Custom provider / current value"
+          inputLabel="Custom provider"
+          value={draft.provider}
+          options={[
+            {
+              value: "",
+              label: defaultProvider
+                ? `Use agent defaults (${defaultProvider})`
+                : "Not set",
+            },
+            ...(discoveredProviders
+              ? piOptions(piProviders, draft.provider)
+              : (harness?.providers ?? [])),
+          ]}
+          onChange={(provider, pickedOption) => {
+            onChange({
+              provider,
+              ...(external ? { model: "" } : {}),
+            });
+            if (pickedOption) onProviderSelected?.();
+          }}
+        />
+      )}
       {piLoading && (
         <p role="status" className="text-body-sm text-secondary">
           Loading signed-in providers…

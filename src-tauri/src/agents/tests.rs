@@ -533,8 +533,15 @@ fn real_ipc_snapshot_save_cas_stop_and_launch_gate() {
     assert_eq!(before["harnessOptions"][1]["command"], "goose");
     assert_eq!(before["harnessOptions"][3]["id"], "codex");
     assert_eq!(before["harnessOptions"][3]["label"], "Codex");
-    assert_eq!(before["harnessOptions"][3]["available"], false);
-    assert_eq!(before["harnessOptions"][3]["status"], "not-enabled");
+    assert_eq!(before["harnessOptions"][3]["available"], cfg!(unix));
+    assert_eq!(
+        before["harnessOptions"][3]["status"],
+        if cfg!(unix) {
+            "check-needed"
+        } else {
+            "not-enabled"
+        }
+    );
     assert_eq!(
         before["harnessOptions"][3]["configurationPolicy"],
         json!({
