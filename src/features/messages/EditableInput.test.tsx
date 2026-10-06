@@ -86,8 +86,8 @@ function mount(initial: string | MentionDraft = "", maxLength = 16000) {
   };
 }
 
-it("preserves inline Markdown and the document while inserting a line break", async () => {
-  const h = mount("_abcd_");
+it("preserves inline Markdown when a line break reaches the length limit", async () => {
+  const h = mount("_abcd_", 11);
   act(() => {
     h.input.setSelectionRange(0, 6);
     h.input.toggleFormat("bold");
@@ -112,19 +112,6 @@ it("preserves formatted pasted link source across a line break", async () => {
   expect(h.input.querySelectorAll(":scope > p")).toHaveLength(1);
   expect(h.input).toHaveValue("[lab\nel](https://example.com) ");
   expect(h.markdown()).toBe("**[lab\nel](https://example.com)** ");
-});
-
-it("accepts a line break when the unchanged Markdown fits the length limit", async () => {
-  const h = mount("abcd", 9);
-  act(() => {
-    h.input.setSelectionRange(0, 4);
-    h.input.toggleFormat("bold");
-    h.input.setSelectionRange(2, 2);
-  });
-  expect(h.markdown()).toBe("**abcd**");
-  await h.user.keyboard("{Shift>}{Enter}{/Shift}");
-  expect(h.input).toHaveValue("ab\ncd");
-  expect(h.markdown()).toBe("**ab\ncd**");
 });
 
 it("refreshes only an accepted collapsed Mac WebKit line-break caret", () => {
