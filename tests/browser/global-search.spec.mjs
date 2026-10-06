@@ -1,6 +1,23 @@
 import { test, expect } from "./fixture.mjs";
 
 const button = (page, name) => page.getByRole("button", { name, exact: true });
+// The palette scales in and its content slides in after a delay. Both hold
+// still at their start before moving, so Playwright's stable check can pass
+// mid-entrance. Finish the entrance before measuring rows or moving the pointer.
+const entered = async (dialog) => {
+  await expect(dialog).not.toHaveAttribute("data-starting-style");
+  await dialog.evaluate((node) =>
+    Promise.all(
+      node
+        .getAnimations({ subtree: true })
+        .filter(
+          (animation) =>
+            animation.effect?.getComputedTiming().endTime !== Infinity,
+        )
+        .map((animation) => animation.finished),
+    ),
+  );
+};
 test("search arrows traverse the conversation action and recent activity, Enter opens and Escape restores focus", async ({
   page,
   app,
@@ -283,6 +300,7 @@ test("keyboard selection follows its action while recent conversations arrive ab
       dialog.getByText("Connecting to this community…", { exact: true }),
     ).toHaveCount(0);
     await expect(recent).toHaveCount(0);
+    await entered(dialog);
     const id = await projects.getAttribute("id");
     while ((await input.getAttribute("aria-activedescendant")) !== id)
       await input.press("ArrowDown");
@@ -321,13 +339,21 @@ test("a resting pointer does not steal the typed selection when results move und
   const dialog = page.getByRole("dialog", { name: "Search Buzz" });
   const input = dialog.getByRole("combobox", { name: "Search Buzz" });
   const rows = dialog.getByRole("option");
-  // Hover waits for the row to stop moving as the dialog opens and recent
-  // activity loads, so the measured position is where the row stays.
-  await rows.nth(2).hover({ position: { x: 20, y: 10 } });
-  const box = await rows.nth(2).boundingBox();
+  // Measure where the row stays: after the entrance and recent activity load.
+  await expect(
+    dialog
+      .getByRole("group", { name: "Recent activity" })
+      .getByRole("option", { name: /Beta/ }),
+  ).toBeVisible();
+  await entered(dialog);
+  const row = rows.nth(2);
+  // The first move inside the palette only records the pointer; the next
+  // one is a real move and selects.
+  await row.hover({ position: { x: 20, y: 10 } });
+  const box = await row.boundingBox();
   const y = box.y + 10;
   await page.mouse.move(box.x + 30, y);
-  await expect(rows.nth(2)).toHaveAttribute("aria-selected", "true");
+  await expect(row).toHaveAttribute("aria-selected", "true");
   await input.fill("a");
   const alpha = dialog
     .getByRole("group", { name: "Channels" })
@@ -336,8 +362,18 @@ test("a resting pointer does not steal the typed selection when results move und
   // WebKit replays the resting position when rows move; that is not a hover.
   await page.mouse.move(box.x + 30, y);
   await expect(alpha).toHaveAttribute("aria-selected", "true");
+  // A real move selects whichever result is now under the pointer.
   await page.mouse.move(box.x + 40, y);
-  await expect(rows.nth(2)).toHaveAttribute("aria-selected", "true");
+  const hovered = await page.evaluate(
+    ([x, y]) => document.elementFromPoint(x, y)?.closest('[role="option"]')?.id,
+    [box.x + 40, y],
+  );
+  expect(hovered).toBeTruthy();
+  expect(hovered).not.toBe(await alpha.getAttribute("id"));
+  await expect(dialog.locator(`[id="${hovered}"]`)).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await expect(alpha).toHaveAttribute("aria-selected", "false");
 });
 
