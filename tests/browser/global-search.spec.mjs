@@ -340,3 +340,51 @@ test("a resting pointer does not steal the typed selection when results move und
   await expect(rows.nth(2)).toHaveAttribute("aria-selected", "true");
   await expect(alpha).toHaveAttribute("aria-selected", "false");
 });
+
+// The real rendered palette and verified finite reader must carry operator constraints
+// into the relay query, rather than filtering a truncated first result page.
+test.describe("message search operators", () => {
+  test.use({
+    openSearch: true,
+    productionBroker: true,
+    historyCounts: { alpha: 1, beta: 1 },
+  });
+  test("combines author, channel and inclusive/exclusive day boundaries in the rendered flow", async ({
+    page,
+    app,
+  }) => {
+    await page.goto(app.origin);
+    await button(page, "Search Buzz").click();
+    const input = page.getByRole("combobox", { name: "Search Buzz" });
+    await input.fill(
+      `crew-search in:${app.openChannelId} from:${app.searchTarget.pubkey} after:2023-11-14 before:2023-11-15`,
+    );
+    await expect(
+      page.getByRole("option", { name: /crew-search exact public reply/ }),
+    ).toBeVisible();
+    const filter = app.report.queries.find(
+      ({ filter }) => filter.search === "crew-search" && filter.authors?.length,
+    );
+    expect(filter?.filter).toMatchObject({
+      "#h": [app.openChannelId],
+      authors: [app.searchTarget.pubkey],
+      since: Date.UTC(2023, 10, 14) / 1000,
+      until: Date.UTC(2023, 10, 15) / 1000 - 1,
+    });
+    await input.fill(
+      `crew-search in:${app.openChannelId} from:${app.searchTarget.pubkey} before:2023-11-14`,
+    );
+    await expect(
+      page.getByRole("option", { name: /crew-search exact public reply/ }),
+    ).toHaveCount(0);
+    await expect
+      .poll(() =>
+        app.report.queries.some(
+          ({ filter }) =>
+            filter.search === "crew-search" &&
+            filter.until === Date.UTC(2023, 10, 14) / 1000 - 1,
+        ),
+      )
+      .toBe(true);
+  });
+});

@@ -15,10 +15,12 @@ export function SearchField({
   variant = "default",
   description,
   error,
+  prefix,
   ...inputProps
 }: {
   inputRef?: Ref<HTMLElement>;
   variant?: "default" | "capsule";
+  prefix?: ReactNode;
   description?: ReactNode;
   error?: ReactNode;
   value: string;
@@ -27,7 +29,7 @@ export function SearchField({
   placeholder?: string;
 } & Omit<
   ComponentProps<typeof Input>,
-  "value" | "onValueChange" | "className" | "ref" | "render" | "type"
+  "value" | "onValueChange" | "className" | "ref" | "render" | "type" | "prefix"
 >) {
   const localRef = useRef<HTMLElement | null>(null);
   const clear = value ? (
@@ -73,11 +75,13 @@ export function SearchField({
       {variant === "capsule" ? (
         <div data-buzz-ui="" className="search-field">
           {icon}
+          {prefix}
           {input}
           {clear}
         </div>
       ) : (
         <InputGroup leading={icon} trailing={clear}>
+          {prefix}
           {input}
         </InputGroup>
       )}

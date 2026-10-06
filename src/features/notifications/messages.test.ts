@@ -776,3 +776,50 @@ it.each([true, false])(
     else expect(h.show).not.toHaveBeenCalled();
   },
 );
+
+it("explicit thread choices decide reply alerts; mentions still alert", async () => {
+  const saved = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => saved.get(key) ?? null,
+    setItem: (key: string, value: string) => saved.set(key, value),
+    removeItem: (key: string) => saved.delete(key),
+  });
+  try {
+    const h = await setup();
+    const now = Math.floor(Date.now() / 1000);
+    const followed = message(h.peer, "room", "Their thread", now - 2);
+    const mine = message(h.viewer, "room", "My thread", now - 1);
+    h.emit([followed, mine], "replay");
+    h.owner.session.unread.follow("room", followed.id, true);
+    h.owner.session.unread.follow("room", mine.id, false);
+    const answer = (root: typeof mine, text: string, tags: string[][] = []) =>
+      signed(h.peer, {
+        kind: 9,
+        content: text,
+        created_at: now,
+        tags: [
+          ["h", "room"],
+          ["e", root.id, "", "root"],
+          ["e", root.id, "", "reply"],
+          ...tags,
+        ],
+      });
+    h.emit([answer(mine, "muted")], "live");
+    h.emit([answer(followed, "followed")], "live");
+    await vi.waitFor(() => expect(h.show).toHaveBeenCalledOnce());
+    h.emit([answer(mine, "mention", [["p", h.viewer.pubkey]])], "live");
+    await vi.waitFor(() => expect(h.show).toHaveBeenCalledTimes(2));
+    expect(h.show.mock.calls.map(([alert]) => alert.body)).toEqual([
+      "followed",
+      "mention",
+    ]);
+    expect([...saved.values()]).toEqual([
+      JSON.stringify([
+        [`room:${followed.id}`, true],
+        [`room:${mine.id}`, false],
+      ]),
+    ]);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});

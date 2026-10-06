@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import type { ChatCircleIcon } from "../../shared/design-system/icons/index";
+import { Avatar } from "../../shared/design-system/ui/Avatar";
 import { NavigationItem } from "../../shared/design-system/ui/NavigationItem";
 import { NavigationSection } from "../../shared/design-system/ui/NavigationSection";
 import { SearchField } from "../../shared/design-system/ui/SearchField";
@@ -23,6 +24,9 @@ export type SearchDestination = {
   matches?: readonly number[];
   icon: typeof ChatCircleIcon;
   image?: string | undefined;
+  avatar?:
+    | { src?: string | undefined; shape: "circle" | "squircle" }
+    | undefined;
   run: () => void;
 };
 
@@ -144,12 +148,20 @@ export type SearchInputProps = {
   label?: string;
   placeholder?: string | undefined;
   scope?: { label: string; onRemove: () => void } | undefined;
+  authorChip?:
+    | { label: string; title: string; onRemove: () => void }
+    | undefined;
+  displayQuery?: string | undefined;
+  onDisplayQueryChange?: ((value: string) => void) | undefined;
 };
 
 export function SearchChoices({
   groups,
   query,
   onQueryChange,
+  authorChip,
+  displayQuery,
+  onDisplayQueryChange,
   input,
   label = "Search Buzz",
   placeholder = "Search pages, conversations and messages…",
@@ -220,6 +232,21 @@ export function SearchChoices({
         </button>
       )}
       <SearchField
+        prefix={
+          authorChip ? (
+            <span className="search-palette-author-prefix">
+              <button
+                type="button"
+                className="search-palette-author-chip"
+                aria-label={`Remove author ${authorChip.label}`}
+                title={authorChip.title}
+                onClick={authorChip.onRemove}
+              >
+                <span aria-hidden="true">×</span> from:@{authorChip.label}
+              </button>
+            </span>
+          ) : undefined
+        }
         inputRef={input}
         role="combobox"
         aria-controls={id}
@@ -228,8 +255,8 @@ export function SearchChoices({
         aria-activedescendant={selected ? optionId(selected) : undefined}
         label={label}
         placeholder={placeholder}
-        value={query}
-        onValueChange={onQueryChange}
+        value={displayQuery ?? query}
+        onValueChange={onDisplayQueryChange ?? onQueryChange}
         spellCheck={false}
         autoCorrect="off"
         autoCapitalize="off"
@@ -308,7 +335,16 @@ export function SearchChoices({
               >
                 <NavigationSection label={label}>
                   {destinations.map(
-                    ({ key, label, detail, matches, icon, image, run }) => (
+                    ({
+                      key,
+                      label,
+                      detail,
+                      matches,
+                      icon,
+                      image,
+                      avatar,
+                      run,
+                    }) => (
                       <NavigationItem
                         key={key}
                         id={optionId(key)}
@@ -325,7 +361,17 @@ export function SearchChoices({
                         }
                         icon={
                           <span className="grid size-6 shrink-0 place-items-center">
-                            <PageIcon icon={icon} image={image} size={17} />
+                            {avatar ? (
+                              <Avatar
+                                alt=""
+                                fallback={label}
+                                src={avatar.src}
+                                size="small"
+                                shape={avatar.shape}
+                              />
+                            ) : (
+                              <PageIcon icon={icon} image={image} size={17} />
+                            )}
                           </span>
                         }
                         label={

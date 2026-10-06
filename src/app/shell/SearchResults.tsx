@@ -1,15 +1,30 @@
 import { useIdentityNames } from "../../features/identity-names/react";
-import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { npubEncode } from "nostr-tools/nip19";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { ChannelSummary, Profile } from "../../features/relay/contracts";
+import type { EventData } from "../../features/relay/events";
 import type { RelaySession } from "../../features/relay/session";
 import { useChannelList } from "../../features/relay/react";
-import { ChatCircleIcon } from "../../shared/design-system/icons/index";
+import { useAgentChoices } from "../../features/agents/use-choices";
+import { useMentionArchives } from "../../features/messages/use-mention-archives";
+import { archivedMention } from "../../features/messages/mention-candidates";
+import { foldProfiles } from "../../features/relay/profiles";
+import {
+  CalendarIcon,
+  ChatCircleIcon,
+} from "../../shared/design-system/icons/index";
 import { Button } from "../../shared/design-system/ui/Button";
 import type { SearchDestination, SearchInputProps } from "./SearchChoices";
 import { matchName, matchRank, SearchChoices } from "./SearchChoices";
 import { noSearchUsage, readSearchUsage, recordChoice } from "./search-usage";
 import { usePublicChannelSearch } from "./usePublicChannelSearch";
 import { useSearchMessages } from "./useSearchMessages";
+import {
+  isChannelUuid,
+  isHexPubkey,
+  normalizeInChannel,
+  parseSearchOperators,
+} from "./parseSearchOperators";
 
 function conversationName(
   channel: ChannelSummary,
@@ -54,6 +69,9 @@ export function SearchResults({
 } & SearchInputProps) {
   const resolveName = useIdentityNames(session.names);
   const list = useChannelList(session.channels);
+  const parsed = useMemo(() => parseSearchOperators(query.trim()), [query]);
+  const authorPrompt = /(?:^|\s)from:(@?)([^\s]*)$/i.exec(query);
+  const pickerPrompt = !!authorPrompt && !isHexPubkey(authorPrompt[2] ?? "");
   const profiles = useSyncExternalStore(
     session.profiles.subscribe,
     session.profiles.snapshot,
@@ -71,18 +89,298 @@ export function SearchResults({
       ),
     [list.channels, scopedChannelId],
   );
-  const search = useSearchMessages(session, query.trim(), scopedChannelId);
-  const publicChannels = usePublicChannelSearch(
-    session,
-    scopedChannelId ? "" : query.trim(),
-    list.status === "ready",
-  );
+  const [selectedAuthor, setSelectedAuthor] = useState<{
+    query: string;
+    pubkey: string;
+    name: string;
+    index: number;
+  }>();
+  const authorOperand = selectedAuthor ? `from:${selectedAuthor.pubkey}` : "";
+  const selectedIndex = selectedAuthor?.index ?? -1;
+  const showAuthorChip =
+    !!selectedAuthor &&
+    query === selectedAuthor.query &&
+    query.slice(selectedIndex, selectedIndex + authorOperand.length) ===
+      authorOperand;
+  const displayQuery = showAuthorChip
+    ? `${query.slice(0, selectedIndex)}${query.slice(selectedIndex + authorOperand.length).replace(/^\s/, "")}`
+    : undefined;
+  const updateDisplayQuery = (value: string) => {
+    const nextQuery = showAuthorChip
+      ? `from:${selectedAuthor?.pubkey} ${value.trimStart()}`
+      : value;
+    setSelectedAuthor(
+      showAuthorChip && selectedAuthor
+        ? { ...selectedAuthor, query: nextQuery, index: 0 }
+        : undefined,
+    );
+    onQueryChange(nextQuery);
+  };
+  const removeSelectedAuthor = () => {
+    if (!selectedAuthor || !showAuthorChip) return;
+    onQueryChange(displayQuery ?? "");
+    setSelectedAuthor(undefined);
+    input.current?.focus();
+  };
+  const updateDateQuery = (nextQuery: string) => {
+    if (showAuthorChip && selectedAuthor) {
+      const index = nextQuery.indexOf(authorOperand);
+      setSelectedAuthor(
+        index < 0 ? undefined : { ...selectedAuthor, query: nextQuery, index },
+      );
+    }
+    onQueryChange(nextQuery);
+  };
+  const [authorSuggestions, setAuthorSuggestions] = useState<{
+    query: string;
+    lookupFailed?: boolean;
+    remote: readonly EventData[];
+  }>();
+  // Completing either from:name or from:@name selects an exact signed key.
+  const datePrompt = /(?:^|\s)(after|before):([^\s]*)$/i.exec(query);
+  const showDateChoices =
+    !!datePrompt && !/^\d{4}-\d{2}-\d{2}$/.test(datePrompt[2] ?? "");
+  const datePresets = [
+    ["Today", 0],
+    ["Yesterday", 1],
+    ["This week", 2],
+    ["Last week", 3],
+    ["This month", 4],
+  ] as const;
+  const dateChoices: SearchDestination[] =
+    showDateChoices && datePrompt
+      ? datePresets.map(([label, kind]) => {
+          const day = new Date();
+          day.setHours(0, 0, 0, 0);
+          if (kind === 1) day.setDate(day.getDate() - 1);
+          if (kind === 2 || kind === 3) {
+            day.setDate(
+              day.getDate() - ((day.getDay() + 6) % 7) - (kind === 3 ? 7 : 0),
+            );
+          }
+          if (kind === 4) day.setDate(1);
+          const date = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+          return {
+            key: `date:${kind}`,
+            label,
+            detail: date,
+            icon: CalendarIcon,
+            run: () =>
+              updateDateQuery(
+                `${query.slice(0, datePrompt.index)} ${datePrompt[1]}:${date} `.trimStart(),
+              ),
+          };
+        })
+      : [];
   const names = new Map(
     channels.map((channel) => [
       channel.id,
       conversationName(channel, profiles, resolveName),
     ]),
   );
+  const operatorChannel = parsed.in ? normalizeInChannel(parsed.in) : "";
+  const localChannel = operatorChannel
+    ? list.channels.find(
+        (channel) =>
+          channel.name.toLowerCase() === operatorChannel.toLowerCase() ||
+          names.get(channel.id)?.toLowerCase() ===
+            operatorChannel.toLowerCase(),
+      )
+    : undefined;
+  const needsPublicLookup =
+    !scopedChannelId &&
+    !!operatorChannel &&
+    !isChannelUuid(operatorChannel) &&
+    !localChannel;
+  const operatorPublicChannels = usePublicChannelSearch(
+    session,
+    needsPublicLookup ? operatorChannel : "",
+    list.status === "ready",
+    true,
+  );
+  const operatorChannelId = isChannelUuid(operatorChannel)
+    ? operatorChannel
+    : (localChannel?.id ?? operatorPublicChannels.channels[0]?.id);
+  const search = useSearchMessages(
+    session,
+    query,
+    scopedChannelId,
+    operatorChannelId,
+  );
+  const showAmbiguousPicker = !!search.ambiguousAuthor && !pickerPrompt;
+  // Ambiguity is known only after a completed token. Keep its original span so
+  // choosing a key does not discard free text or other operators after it.
+  const completedAuthor = showAmbiguousPicker
+    ? [...query.matchAll(/(?:^|\s)from:(@?)(\S+)/gi)].at(-1)
+    : undefined;
+  const authorToken = authorPrompt ?? completedAuthor;
+  const authorNeedle = (authorPrompt?.[2] ?? parsed.from ?? "")
+    .replace(/^@/, "")
+    .toLowerCase();
+  const showAuthorPicker = pickerPrompt || showAmbiguousPicker;
+  const agents = useAgentChoices(session, showAuthorPicker);
+  useMentionArchives(session, showAuthorPicker);
+  const effectiveChannelId = scopedChannelId ?? operatorChannelId;
+  useEffect(() => {
+    if (!showAuthorPicker) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      void (async () => {
+        const members = effectiveChannelId
+          ? (session.channels.get?.(effectiveChannelId)?.members ?? [])
+          : [];
+        if (members.length) {
+          try {
+            await session.profiles.ensure(members, "foreground");
+          } catch (error) {
+            if (controller.signal.aborted) throw error;
+            // A partial directory still contains verified member profiles.
+          }
+        }
+        let remote: readonly EventData[] = [];
+        let lookupFailed = false;
+        if (authorNeedle) {
+          try {
+            remote = await session.read(
+              [
+                {
+                  kinds: [0],
+                  search: authorNeedle,
+                  search_mode: "prefix",
+                  limit: 40,
+                },
+              ],
+              {
+                signal: controller.signal,
+                priority: "foreground",
+                fresh: true,
+              },
+            );
+          } catch (error) {
+            if (controller.signal.aborted) throw error;
+            lookupFailed = true;
+          }
+        }
+        controller.signal.throwIfAborted();
+        setAuthorSuggestions({ query, lookupFailed, remote });
+      })().catch(() => {
+        if (!controller.signal.aborted)
+          setAuthorSuggestions({ query, remote: [], lookupFailed: true });
+      });
+    }, 180);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [session, effectiveChannelId, query, authorNeedle, showAuthorPicker]);
+  const members = effectiveChannelId
+    ? (session.channels.get?.(effectiveChannelId)?.members ?? [])
+    : [];
+  const knownAgents = new Set(agents.identities.map(({ pubkey }) => pubkey));
+  const selectableAgents = new Map(
+    agents.selectable.map((agent) => [agent.pubkey, agent]),
+  );
+  const candidates = new Map([
+    ...[...profiles].filter(([pubkey]) => members.includes(pubkey)),
+    ...agents.selectable.map(
+      (agent) =>
+        [
+          agent.pubkey,
+          profiles.get(agent.pubkey) ?? {
+            name: agent.name,
+            isAgent: true as const,
+            ...(agent.avatar ? { picture: agent.avatar } : {}),
+          },
+        ] as const,
+    ),
+    ...foldProfiles(
+      authorSuggestions?.query === query ? authorSuggestions.remote : [],
+    ),
+  ]);
+  const authorChoices =
+    authorToken && showAuthorPicker && authorSuggestions?.query === query
+      ? [...candidates]
+          .filter(([, profile]) =>
+            profile.name.toLowerCase().startsWith(authorNeedle),
+          )
+          .filter(
+            ([pubkey]) =>
+              !archivedMention(session, pubkey) &&
+              (!knownAgents.has(pubkey) || selectableAgents.has(pubkey)),
+          )
+          // Exact names survive the cap when the resolver reports ambiguity.
+          .sort(
+            ([left, leftProfile], [right, rightProfile]) =>
+              Number(rightProfile.name.trim().toLowerCase() === authorNeedle) -
+                Number(
+                  leftProfile.name.trim().toLowerCase() === authorNeedle,
+                ) ||
+              Number(!!leftProfile.isAgent || knownAgents.has(left)) -
+                Number(!!rightProfile.isAgent || knownAgents.has(right)) ||
+              Number(members.includes(right)) - Number(members.includes(left)),
+          )
+          .slice(0, 12)
+          .map(([pubkey, profile]) => ({ pubkey, profile }))
+          .map(({ pubkey, profile }) => {
+            const agent = selectableAgents.get(pubkey);
+            const isAgent = !!agent || !!profile.isAgent;
+            return {
+              key: `author:${pubkey}`,
+              label: resolveName(
+                pubkey,
+                profile.name,
+                effectiveChannelId
+                  ? session.channels.get?.(effectiveChannelId)?.members
+                  : undefined,
+              ),
+              detail: pubkey.slice(0, 12),
+              icon: ChatCircleIcon,
+              avatar: {
+                src: session.media(
+                  profile.picture ?? agent?.avatar ?? "",
+                  "small",
+                ),
+                shape: isAgent ? ("squircle" as const) : ("circle" as const),
+              },
+              isAgent,
+              run: () => {
+                // The prompt's leading separator may be the one removed with
+                // the old chip. Map the token itself through that removal,
+                // rather than subtracting the separator from its start twice.
+                const visible = displayQuery ?? query;
+                const oldEnd = selectedIndex + authorOperand.length;
+                const removedLength = showAuthorChip
+                  ? authorOperand.length + (query[oldEnd] === " " ? 1 : 0)
+                  : 0;
+                const tokenStart =
+                  authorToken.index +
+                  (authorToken[0].match(/^\s*/)?.[0].length ?? 0);
+                const promptStart =
+                  showAuthorChip && selectedIndex < tokenStart
+                    ? tokenStart - removedLength
+                    : tokenStart;
+                const promptEnd =
+                  promptStart + authorToken[0].trimStart().length;
+                const prefix = visible.slice(0, promptStart);
+                const nextQuery = `${prefix}from:${pubkey}${visible.slice(promptEnd) || " "}`;
+                setSelectedAuthor({
+                  query: nextQuery,
+                  pubkey,
+                  name: profile.name,
+                  index: prefix.length,
+                });
+                onQueryChange(nextQuery);
+                input.current?.focus();
+              },
+            };
+          })
+      : [];
+  const publicChannels = usePublicChannelSearch(
+    session,
+    scopedChannelId ? "" : parsed.text,
+    list.status === "ready",
+  );
+
   const profileKey = [
     ...new Set([
       ...channels.flatMap((channel) =>
@@ -100,7 +398,7 @@ export function SearchResults({
         .ensure(profileKey.split(":"), "background")
         .catch(() => {});
   }, [session, profileKey]);
-  const needle = query.trim().toLowerCase().replace(/^#/, "");
+  const needle = parsed.text.toLowerCase().replace(/^#/, "");
   // Read once per opening, so usage recorded while it is open cannot reorder it.
   const usage = useMemo(
     () => (usageScope ? readSearchUsage(usageScope) : noSearchUsage),
@@ -117,7 +415,8 @@ export function SearchResults({
     new Set([
       ...channels
         .filter(
-          ({ id }) => matchRank(names.get(id) ?? "", needle) !== undefined,
+          ({ id }) =>
+            parsed.text && matchRank(names.get(id) ?? "", needle) !== undefined,
         )
         .map(({ id }) => `channel:${id}`),
       ...publicChannels.channels.map(({ id }) => `channel:${id}`),
@@ -148,7 +447,9 @@ export function SearchResults({
     );
   const matchingAll = byMatch(
     channels.filter(
-      (channel) => matchRank(names.get(channel.id) ?? "", needle) !== undefined,
+      (channel) =>
+        parsed.text &&
+        matchRank(names.get(channel.id) ?? "", needle) !== undefined,
     ),
     channelRank,
   );
@@ -225,45 +526,52 @@ export function SearchResults({
     icon: ChatCircleIcon,
     run: () => openConversation(message.channelId, message.id),
   }));
-  const messageEmpty = search.loading
-    ? "Searching messages…"
-    : search.error
-      ? "Message search is unavailable."
-      : query.trim()
-        ? "No matching messages in accessible conversations."
-        : scopedChannelId
-          ? "Type to search messages in this conversation."
-          : "Type to search messages in this community.";
+  const operatorLookupPending =
+    needsPublicLookup &&
+    (list.status !== "ready" || operatorPublicChannels.loading);
+  const operatorLookupError = needsPublicLookup
+    ? operatorPublicChannels.error
+    : undefined;
+  const messageEmpty =
+    operatorLookupPending || search.loading
+      ? "Searching messages…"
+      : operatorLookupError || search.error
+        ? "Message search is unavailable."
+        : query.trim()
+          ? "No matching messages in accessible conversations."
+          : scopedChannelId
+            ? "Type to search messages in this conversation."
+            : "Type to search messages in this community.";
   // A retry removes its own focused button. Return focus to the combobox,
   // which owns keyboard navigation, before the retry starts.
   const retryFromInput = (retry: () => unknown) => () => {
     input.current?.focus();
     retry();
   };
-  return (
-    <SearchChoices
-      query={query}
-      onQueryChange={onQueryChange}
-      input={input}
-      label={scopedChannelId ? "Search this conversation" : "Search Buzz"}
-      placeholder={
-        scopedChannelId
-          ? "Search messages…"
-          : "Search pages, conversations and messages…"
-      }
-      scope={
-        scopedChannelId && onScopeChange
-          ? {
-              label:
-                names.get(scopedChannelId) ??
-                session.channels.get?.(scopedChannelId)?.name ??
-                "Conversation",
-              onRemove: () => onScopeChange(),
-            }
-          : undefined
-      }
-      groups={
-        scopedChannelId
+  const groups =
+    pickerPrompt || showAmbiguousPicker
+      ? [
+          {
+            label: "People",
+            destinations: authorChoices.filter((choice) => !choice.isAgent),
+            empty: authorChoices.length
+              ? undefined
+              : authorSuggestions?.query !== query
+                ? "Searching people…"
+                : authorSuggestions.lookupFailed
+                  ? "People search is unavailable. Try a longer name."
+                  : authorNeedle
+                    ? "No matching people. Try a different name."
+                    : "Type a name to search people.",
+          },
+          {
+            label: "Agents",
+            destinations: authorChoices.filter((choice) => choice.isAgent),
+          },
+        ]
+      : showDateChoices
+        ? [{ label: "Dates", destinations: dateChoices }]
+        : scopedChannelId
           ? [
               {
                 label: "Most relevant",
@@ -343,8 +651,41 @@ export function SearchResults({
                       ? undefined
                       : messageEmpty,
                 },
-              ]
+              ];
+  return (
+    <SearchChoices
+      query={query}
+      onQueryChange={onQueryChange}
+      authorChip={
+        showAuthorChip && selectedAuthor
+          ? {
+              label: selectedAuthor.name,
+              title: npubEncode(selectedAuthor.pubkey),
+              onRemove: removeSelectedAuthor,
+            }
+          : undefined
       }
+      displayQuery={displayQuery}
+      onDisplayQueryChange={updateDisplayQuery}
+      input={input}
+      label={scopedChannelId ? "Search this conversation" : "Search Buzz"}
+      placeholder={
+        scopedChannelId
+          ? "Search messages…"
+          : "Search pages, conversations and messages…"
+      }
+      scope={
+        scopedChannelId && onScopeChange
+          ? {
+              label:
+                names.get(scopedChannelId) ??
+                session.channels.get?.(scopedChannelId)?.name ??
+                "Conversation",
+              onRemove: () => onScopeChange(),
+            }
+          : undefined
+      }
+      groups={groups}
     >
       <div
         className="space-y-2 px-3 text-body-sm text-subtle"
@@ -372,9 +713,13 @@ export function SearchResults({
         {list.coverage === "partial" && (
           <p>Conversation names include only loaded joined conversations.</p>
         )}
-        {query.trim() && !scopedChannelId && publicChannels.partial && (
-          <p>Public channel results include only the first page of channels.</p>
-        )}
+        {query.trim() &&
+          !scopedChannelId &&
+          (publicChannels.partial || operatorPublicChannels.partial) && (
+            <p>
+              Public channel results include only the first page of channels.
+            </p>
+          )}
         {!scopedChannelId && publicChannels.error && (
           <div>
             <p>{publicChannels.error}</p>
@@ -382,6 +727,18 @@ export function SearchResults({
               size="sm"
               variant="ghost"
               onClick={retryFromInput(publicChannels.retry)}
+            >
+              Retry channels
+            </Button>
+          </div>
+        )}
+        {operatorLookupError && (
+          <div>
+            <p>{operatorLookupError}</p>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={retryFromInput(operatorPublicChannels.retry)}
             >
               Retry channels
             </Button>

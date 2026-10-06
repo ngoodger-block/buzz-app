@@ -36,6 +36,7 @@ const origin = "https://left.example";
 const kept = "https://kept.example";
 const receipt = (scope: string) => `buzz-channel-setup.v2:${scope}:general`;
 const reactions = (scope: string) => `buzz.quick-reactions.v1:${scope}`;
+const follows = (scope: string) => `buzz.thread-follows.v1:${scope}`;
 
 afterEach(() => {
   localStorage.clear();
@@ -57,7 +58,11 @@ it("forgets every store partitioned to the left community and viewer, and nothin
   recordReaction(`${kept}:${viewer}`, "🎉");
   localStorage.setItem(receipt(scope), "1");
   localStorage.setItem(receipt(`${kept}:${viewer}`), "1");
+  localStorage.setItem(follows(scope), "[]");
+  localStorage.setItem(follows(`${kept}:${viewer}`), "[]");
   expect(await purgeCommunityDeviceState(origin, viewer)).toEqual([]);
+  expect(localStorage.getItem(follows(scope))).toBeNull();
+  expect(localStorage.getItem(follows(`${kept}:${viewer}`))).toBe("[]");
   expect(readView(scope, "draft:general", "")).toBe("");
   expect(readView(scope, "channel", "")).toBe("");
   expect(readView(`${kept}:${viewer}`, "draft:general", "")).toBe(

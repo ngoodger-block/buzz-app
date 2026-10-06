@@ -195,26 +195,58 @@ Every top-level message counts. A reply counts only when it is in one of the
 viewer's conversations, or it is a DM, mentions the viewer, or is broadcast to the
 channel. A conversation is the set of direct replies to one parent message. The
 viewer is part of it when the viewer wrote the parent or also replied to that
-parent. A nested thread under someone else's reply therefore stays quiet until the
-viewer posts in it or is mentioned there. Explicit per-message unread intent still
+parent, or wrote or replied anywhere under the same canonical thread root, as in
+the reference client. A thread the viewer has not posted in therefore stays
+quiet, apart from mentions and broadcasts. Explicit per-message unread intent still
 applies to any reply. The same rule feeds channel and thread counts, thread
 activity, per-message attention and the `thread` notification category.
 
+**Follow thread** / **Unfollow thread** in a message's menu records an explicit
+choice for the message's canonical thread root (`threadRootId ?? id`), so every
+reply under that root, at any depth, uses it. Follow makes the thread one of the
+viewer's conversations without posting; Unfollow removes it even after the
+viewer wrote the root or replied, and replying again does not undo it. Mentions
+and broadcasts still count, as they do outside conversations. Without a choice
+the label shows Unfollow exactly when that root-wide participation applies, so
+the label and the alerts agree; a mention alone is not a follow. A restored
+roster shows no menu until membership is confirmed. DMs have no menu item: every DM message is
+direct attention. `session.unread.following(channelId, rootId)` reads the
+effective state and `follow(channelId, rootId, following)` saves a choice,
+throwing without change when it cannot. Choices are device-local, like the
+reference client: `buzz.thread-follows.v1:<partition>` in local storage, keyed by
+`channel:root`, newest 1,000 kept, shared with other windows through storage
+events and forgotten with the rest of a left community's device state.
+
 Membership is checked in the reply's own channel, and lookups are keyed by
 channel and parent, so a reply in another channel that tags the same parent
-gets its own answer. It starts from retained
-evidence. When a reply is otherwise unread but its conversation is undecided
-(the parent is not loaded, or the viewer's own reply to it is not), a projection
-that evaluates the reply queues one relay lookup for that parent. The fetch runs
-in a microtask, at background priority, in batches of up to 50 parents from one
-channel:
+gets its own answer. It starts from retained evidence. A saved Follow with
+reply-only retained evidence also queues bounded structural recovery of its
+missing root by ID. It does not ask for viewer participation: the saved choice
+already decides membership. Until a same-channel root is verified, thread
+receipts and Activity grouping cannot apply to that reply. When a reply is
+otherwise unread but its conversation is undecided (the parent is not loaded,
+or the viewer's own reply to it is not), a projection
+that evaluates the reply queues one relay lookup for that parent. The same
+lookup decides the whole thread: the viewer wrote the parent or the canonical
+root, or replied anywhere under the root. One lookup per parent keeps demand
+within one per retained reply, so the retained window (at most 4,096 events)
+cannot need more than the 4,096 remembered lookups. That bounds what the
+current window needs, not every queued lookup: lookups queued before an
+overflow reset still drain. A positive result counts only through the root its
+witness names (the same `channel:root` set the Follow label reads), so a reply
+whose root tag disagrees with another reply to the same parent is decided by
+its own root. The fetch
+runs in a microtask, at background priority, in batches of up to 50 parents
+from one channel:
 
 - the missing parents, and the replies' roots, by ID;
-- the viewer's replies in that channel that tag those parents (`#e`, `#h`,
-  `include_aux`, limit 500). `#e` also matches root tags, so a full page is
-  split and asked again; a full page for one parent pages back in time until
-  the viewer's direct reply appears (at most ten pages). Only replies whose
-  reply tag names the parent count, and deleted ones do not.
+- the viewer's replies in that channel that tag those parents or their roots
+  (`#e`, `#h`, `include_aux`, limit 500). `#e` also matches root tags, so a
+  full page is split and asked again; a full page for one parent pages back in
+  time until a deciding reply appears (at most ten pages). Only replies whose
+  reply tag names the parent, or whose root tag names its root, count, and
+  deleted ones do not. The viewer's own fetched parent or root is the witness
+  when there is one.
 
 While a lookup is queued or running, the reply is quiet and its attention is
 `unknown` with `pending: true`; a live notification for it waits instead of

@@ -504,7 +504,11 @@ export function policyRelay({
               resolve(Response.json(result));
             });
           });
-        if (filter.until !== undefined && holdOlder)
+        if (
+          filter.search === undefined &&
+          filter.until !== undefined &&
+          holdOlder
+        )
           return new Promise((resolve, reject) => {
             const abort = () => reject(init.signal.reason);
             init.signal.addEventListener("abort", abort, { once: true });

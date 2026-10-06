@@ -1399,7 +1399,7 @@ export function createChannelStore(
    * previews through `get`; they never enter `list()`. */
   async function searchPublic(
     query: string,
-    settings?: ReadOptions & { limit?: number },
+    settings?: ReadOptions & { limit?: number; exact?: boolean },
   ): Promise<PublicChannelSearch> {
     if (disposed || !transport || !discovery || options.cachedOnly)
       throw new Error("Relay is unavailable");
@@ -1437,7 +1437,10 @@ export function createChannelStore(
             ([key, value]) => key === "archived" && value === "true",
           ) &&
           !discovery.authorized(id) &&
-          name?.toLowerCase().includes(needle)
+          name &&
+          (settings?.exact
+            ? name.toLowerCase() === needle
+            : name.toLowerCase().includes(needle))
           ? [{ id, name }]
           : [];
       })

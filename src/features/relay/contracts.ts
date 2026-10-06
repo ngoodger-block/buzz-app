@@ -172,7 +172,7 @@ export interface ChannelQueries {
    * become readable through `get`; they never enter list(). */
   searchPublic?(
     query: string,
-    options?: ReadOptions & { limit?: number },
+    options?: ReadOptions & { limit?: number; exact?: boolean },
   ): Promise<PublicChannelSearch>;
   /** Exact re-read of one already-listed channel's roster, merged into the
    * ready list. `resolve` admits channels the list lacks; this confirms a

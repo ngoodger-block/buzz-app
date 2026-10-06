@@ -89,6 +89,7 @@ import {
   type OutboxStorage,
 } from "./outbox";
 import { relayPartition, transportPartition } from "./partition";
+import { browserThreadFollows } from "./thread-follows";
 import { createMessages } from "./messages";
 import { createThreadView } from "./threads";
 import { ByteLru } from "./budget";
@@ -450,7 +451,10 @@ export function createRelaySession(
       channelTraffic &&
       filters.every(
         (filter) =>
-          filter.search !== undefined &&
+          (filter.search !== undefined ||
+            !!filter.authors?.length ||
+            filter.since !== undefined ||
+            filter.until !== undefined) &&
           !filter["#h"]?.length &&
           !!filter.kinds?.length &&
           filter.kinds.every((kind) => [9, 40002, 40008].includes(kind)),
@@ -829,6 +833,7 @@ export function createRelaySession(
     viewer: transport?.viewer ?? "",
     relayAuthor: transport?.relayAuthor ?? "",
     notify,
+    follows: browserThreadFollows(readScope),
   });
   const inboxFeed = createInboxFeed({
     // A withheld auxiliary event is not proof of an exhausted history page.

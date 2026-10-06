@@ -1,4 +1,6 @@
 import {
+  BellIcon,
+  BellSlashIcon,
   EnvelopeIcon,
   EnvelopeOpenIcon,
   PencilSimpleIcon,
@@ -219,6 +221,15 @@ export function MessageManagementItems({
     row.channelId,
     (channel) => !!channel?.archived,
   );
+  const dm = useListedChannel(
+    session.channels,
+    row.channelId,
+    (channel) => channel?.channelType === "dm",
+  );
+  const threadRootId = row.threadRootId ?? row.id;
+  const following = useSyncExternalStore(session.unread.subscribeSync, () =>
+    session.unread.following(row.channelId, threadRootId),
+  );
   const target = {
     kind: "message" as const,
     channelId: row.channelId,
@@ -318,6 +329,25 @@ export function MessageManagementItems({
         <MenuIcon>{unread ? <EnvelopeOpenIcon /> : <EnvelopeIcon />}</MenuIcon>
         {unread ? "Mark read" : "Mark unread"}
       </MenuItem>
+      {!dm && (
+        <MenuItem
+          onClick={() => {
+            management.report(undefined);
+            try {
+              session.unread.follow(row.channelId, threadRootId, !following);
+            } catch (cause) {
+              management.report(
+                cause instanceof Error
+                  ? cause.message
+                  : "Could not save thread follow. Try again.",
+              );
+            }
+          }}
+        >
+          <MenuIcon>{following ? <BellSlashIcon /> : <BellIcon />}</MenuIcon>
+          {following ? "Unfollow thread" : "Follow thread"}
+        </MenuItem>
+      )}
     </>
   );
 }

@@ -179,6 +179,52 @@ it("preserves one server ranking above 128 joined channels and opens a public ex
   }
 });
 
+it("resolves public authority for operator-only global reads without widening visibility", async () => {
+  const viewer = keypair(),
+    relay = keypair();
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+  const owner = createRelaySession(wire.transport);
+  const filters = [
+    {
+      kinds: [9],
+      authors: [viewer.pubkey],
+      since: 1700000000,
+      limit: 20,
+    },
+  ];
+  try {
+    const read = owner.session.read(filters).catch((error: unknown) => error);
+    await flush();
+    const query = wire.next();
+    expect(query.filters[0]).not.toHaveProperty("search");
+    const publicHit = message(viewer, "open", "visible", 1700000001);
+    const privateHit = message(viewer, "private", "hidden", 1700000002);
+    query.respond([publicHit, privateHit]);
+    await flush();
+    const authority = wire.next();
+    expect(authority.filters).toMatchObject([
+      { kinds: [39000], "#d": ["open", "private"] },
+      { kinds: [39002], "#d": ["open", "private"], "#p": [viewer.pubkey] },
+    ]);
+    authority.respond([
+      publicMetadata(relay, "open"),
+      publicMetadata(relay, "private", [["private"]]),
+    ]);
+    // Private metadata changes authority mid-read. The first request is fenced,
+    // not silently presented as a complete page of public results.
+    expect(await read).toBeInstanceOf(DOMException);
+    expect(owner.session.channels.get?.("private")).toBeUndefined();
+    const retry = owner.session.read(filters);
+    await flush();
+    wire.next().respond([publicHit]);
+    await flush();
+    wire.next().respond([publicMetadata(relay, "open")]);
+    expect((await retry).map((event) => event.id)).toEqual([publicHit.id]);
+  } finally {
+    owner.dispose();
+  }
+});
+
 it.each(["cancel", "clear", "dispose"])(
   "fences delayed metadata after %s",
   async (action) => {

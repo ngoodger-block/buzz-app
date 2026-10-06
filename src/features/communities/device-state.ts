@@ -2,6 +2,7 @@ import { forgetChannelSetups } from "../channel-templates/setup";
 import { forgetQuickReactions } from "../messages/quick-reactions";
 import { relayPartition } from "../relay/partition";
 import { purgeRelayPartition } from "../relay/partition-purge";
+import { forgetThreadFollows } from "../relay/thread-follows";
 import { clearViewScope } from "../../shared/view-state";
 
 /** One piece of a left community's device state that could not be cleared. */
@@ -43,6 +44,7 @@ export async function purgeCommunityDeviceState(
   await attempt("view state", () => clearViewScope(scope));
   await attempt("channel setups", () => forgetChannelSetups(scope));
   await attempt("quick reactions", () => forgetQuickReactions(scope));
+  await attempt("thread follows", () => forgetThreadFollows(scope));
   await purgeRelayPartition(origin, viewer, attempt);
   return failures;
 }

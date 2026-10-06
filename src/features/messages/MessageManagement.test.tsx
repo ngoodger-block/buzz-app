@@ -497,6 +497,138 @@ it("toggles actual unread state immediately without a dialog", async () => {
   expect(h.publications).toHaveLength(0);
 });
 
+const savedFollows = () =>
+  Object.keys(localStorage)
+    .filter((key) => key.startsWith("buzz.thread-follows.v1:"))
+    .map((key) => localStorage.getItem(key));
+
+it("follows a thread without replying and keeps the saved choice", async () => {
+  localStorage.clear();
+  const h = await fixture(false, true);
+  expect(h.owner.session.unread.following("room", h.original.id)).toBe(false);
+  fireEvent.click(
+    await screen.findByRole("menuitem", { name: "Follow thread" }),
+  );
+  await waitFor(() =>
+    expect(h.owner.session.unread.following("room", h.original.id)).toBe(true),
+  );
+  expect(savedFollows()).toEqual([
+    JSON.stringify([[`room:${h.original.id}`, true]]),
+  ]);
+  fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  fireEvent.click(
+    await screen.findByRole("menuitem", { name: "Unfollow thread" }),
+  );
+  await waitFor(() =>
+    expect(h.owner.session.unread.following("room", h.original.id)).toBe(false),
+  );
+  expect(savedFollows()).toEqual([
+    JSON.stringify([[`room:${h.original.id}`, false]]),
+  ]);
+  expect(h.publications).toHaveLength(0);
+});
+
+it("unfollows a thread the viewer started", async () => {
+  localStorage.clear();
+  const h = await fixture();
+  expect(h.owner.session.unread.following("room", h.original.id)).toBe(true);
+  fireEvent.click(
+    await screen.findByRole("menuitem", { name: "Unfollow thread" }),
+  );
+  await waitFor(() =>
+    expect(h.owner.session.unread.following("room", h.original.id)).toBe(false),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  expect(
+    await screen.findByRole("menuitem", { name: "Follow thread" }),
+  ).toBeVisible();
+});
+
+it("keeps showing Follow thread when the choice cannot be saved", async () => {
+  localStorage.clear();
+  const h = await fixture(false);
+  const setItem = vi
+    .spyOn(Storage.prototype, "setItem")
+    .mockImplementation(() => {
+      throw new DOMException("Quota exceeded", "QuotaExceededError");
+    });
+  try {
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Follow thread" }),
+    );
+    expect(setItem).toHaveBeenCalled();
+  } finally {
+    setItem.mockRestore();
+  }
+  expect(h.owner.session.unread.following("room", h.original.id)).toBe(false);
+  expect(savedFollows()).toEqual([]);
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Could not save thread follow. Try again.",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
+  fireEvent.click(
+    await screen.findByRole("menuitem", { name: "Follow thread" }),
+  );
+  await waitFor(() =>
+    expect(h.owner.session.unread.following("room", h.original.id)).toBe(true),
+  );
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(savedFollows()).toEqual([
+    JSON.stringify([[`room:${h.original.id}`, true]]),
+  ]);
+});
+
+it("offers the follow choice only once a restored roster is confirmed", async () => {
+  localStorage.clear();
+  const h = await fixture(false);
+  h.owner.session.unread.follow("room", h.original.id, true);
+  cleanup();
+  const live = h.owner.session.channels.list();
+  // Discovery marks a restored roster both cached and read-only.
+  let snapshot: typeof live = {
+    ...live,
+    channels: live.channels.map((channel) => ({
+      ...channel,
+      cached: true,
+      readOnly: true,
+    })),
+  };
+  const listeners = new Set<() => void>();
+  const session = {
+    ...h.owner.session,
+    channels: {
+      ...h.owner.session.channels,
+      list: () => snapshot,
+      subscribeList(listener: () => void) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    },
+  };
+  const row = session.channels.window("room").rows[0];
+  assert.exists(row);
+  render(
+    <MessageManagement session={session} channelId="room">
+      <MenuRoot>
+        <MenuTrigger>Thread actions</MenuTrigger>
+        <MenuPopup>
+          <MessageManagementItems row={row} session={session} />
+        </MenuPopup>
+      </MenuRoot>
+    </MessageManagement>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Thread actions" }));
+  await act(async () => {});
+  expect(screen.queryByRole("menuitem", { name: /follow thread/i })).toBeNull();
+  await act(async () => {
+    snapshot = live;
+    for (const listener of listeners) listener();
+  });
+  expect(
+    await screen.findByRole("menuitem", { name: "Unfollow thread" }),
+  ).toBeVisible();
+});
+
 it("keeps deletion recovery outside the optimistically removed row", async () => {
   const h = await fixture();
   fireEvent.click(

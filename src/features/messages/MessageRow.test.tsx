@@ -1090,7 +1090,12 @@ it.each(["sending", "failed"] as const)(
       viewer: row.authorId,
       channels: { list: () => snapshot, subscribeList: () => () => {} },
       messages: {},
-      unread: { subscribe: () => () => {}, snapshot: () => undefined },
+      unread: {
+        subscribe: () => () => {},
+        subscribeSync: () => () => {},
+        snapshot: () => undefined,
+        following: () => false,
+      },
     } as unknown as RelaySession;
     renderDom(
       <MessageRow
@@ -1541,7 +1546,12 @@ it.each(["own", "other", "root", "pending", "archived", "read-only"])(
       channels: { list: () => snapshot, subscribeList: () => () => {} },
       messages: { sendToChannel: send },
       outbox: { supports: () => true },
-      unread: { subscribe: () => () => {}, snapshot: () => undefined },
+      unread: {
+        subscribe: () => () => {},
+        subscribeSync: () => () => {},
+        snapshot: () => undefined,
+        following: () => false,
+      },
     } as unknown as RelaySession;
     const reply: ChannelMessage = {
       ...row,
@@ -1586,7 +1596,12 @@ it("dismisses an unsubmitted report when its retained row is suspended", async (
   const session = {
     messages: { report },
     channels: {},
-    unread: { subscribe: () => () => {}, snapshot: () => undefined },
+    unread: {
+      subscribe: () => () => {},
+      subscribeSync: () => () => {},
+      snapshot: () => undefined,
+      following: () => false,
+    },
   } as unknown as RelaySession;
   const tree = (active: boolean) => (
     <ToastProvider>

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { createRef } from "react";
+import { createRef, useState } from "react";
 import {
   act,
   cleanup,
@@ -11,6 +11,7 @@ import {
   within,
 } from "@testing-library/react";
 import { type Filter, matchFilter } from "nostr-tools";
+import { npubEncode } from "nostr-tools/nip19";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createRelaySession } from "../../features/relay/session";
 import { ReadError } from "../../features/relay/errors";
@@ -18,6 +19,7 @@ import {
   keypair,
   message,
   metadata,
+  profile,
   roster,
   scriptedTransport,
   signed,
@@ -1150,5 +1152,1400 @@ it("keeps the remembered choice selected when a better match arrives late", asyn
     cleanup();
     owner.dispose();
     localStorage.clear();
+  }
+});
+
+it("translates combined operators into a single server-ranked scoped read and opens the match", async () => {
+  vi.useFakeTimers();
+  const relay = keypair(),
+    viewer = keypair(),
+    alice = keypair();
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+  const owner = createRelaySession({
+    ...wire.transport,
+    query(filters, signal) {
+      if (filters.some((filter) => filter.search !== undefined))
+        return wire.transport.query(filters, signal);
+      return Promise.resolve(
+        [
+          metadata(relay, "crew", "crew"),
+          roster(relay, "crew", [viewer.pubkey]),
+        ].filter((event) =>
+          filters.some((filter) => filter.kinds?.includes(event.kind)),
+        ),
+      );
+    },
+  });
+  const open = vi.fn();
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="deploy in:#crew from:@alice after:2024-01-15 before:2024-02-01"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openConversation={open}
+      />,
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(180));
+    const users = wire.next();
+    expect(users.filters).toEqual([
+      { kinds: [0], search: "alice", search_mode: "prefix", limit: 40 },
+    ]);
+    await act(async () =>
+      users.respond([profile(alice, { display_name: "Alice" })]),
+    );
+    const request = wire.next();
+    expect(request.filters).toEqual([
+      {
+        kinds: [40002, 40008, 9],
+        search: "deploy",
+        search_mode: "prefix",
+        limit: 20,
+        "#h": ["crew"],
+        authors: [alice.pubkey],
+        since: Math.floor(new Date(2024, 0, 15).getTime() / 1000),
+        until: Math.floor(new Date(2024, 1, 1).getTime() / 1000) - 1,
+      },
+    ]);
+    const hit = message(alice, "crew", "deploy matched", 1700000001);
+    await act(async () => request.respond([hit]));
+    fireEvent.click(screen.getByRole("option", { name: /deploy matched/ }));
+    expect(open).toHaveBeenCalledExactlyOnceWith("crew", hit.id);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("does not read messages for punctuation-only operands after normalization", async () => {
+  const relay = keypair(),
+    viewer = keypair();
+  const reads: Filter[][] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(9)))
+        reads.push(filters as Filter[]);
+      return Promise.resolve([]);
+    },
+  });
+  const props = {
+    session: owner.session,
+    onQueryChange: vi.fn(),
+    input: createRef<HTMLInputElement>(),
+    pages: [],
+    openConversation: vi.fn(),
+  };
+  try {
+    const view = render(<SearchResults {...props} query="in:#" />);
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 240)));
+    expect(reads).toHaveLength(0);
+    view.rerender(<SearchResults {...props} query="from:. " />);
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 240)));
+    expect(reads).toHaveLength(0);
+    view.rerender(<SearchResults {...props} query="in:# after:2024-01-15" />);
+    await waitFor(() => expect(reads).toHaveLength(1));
+    expect(reads[0]).toEqual([
+      expect.objectContaining({
+        since: Math.floor(new Date(2024, 0, 15).getTime() / 1000),
+      }),
+    ]);
+    expect(reads[0]?.[0]).not.toHaveProperty("search");
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("runs operator-only date and author searches without a text predicate", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    alice = keypair();
+  const channel = "crew";
+  const before = message(alice, channel, "before the cutoff", 1700000001);
+  const after = message(alice, channel, "after the cutoff", 1800000001);
+  const discovery = [
+    metadata(relay, channel, "Wes"),
+    roster(relay, channel, [viewer.pubkey]),
+  ];
+  const reads: Filter[][] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(0)))
+        return Promise.resolve([profile(alice, { display_name: "Alice" })]);
+      if (filters.some((filter) => filter.kinds?.includes(9))) {
+        reads.push(filters as Filter[]);
+        return Promise.resolve(
+          [before, after].filter((event) =>
+            filters.some((filter) => matchFilter(filter as Filter, event)),
+          ),
+        );
+      }
+      return Promise.resolve(
+        discovery.filter((event) =>
+          filters.some((filter) => matchFilter(filter as Filter, event)),
+        ),
+      );
+    },
+  });
+  const props = {
+    session: owner.session,
+    onQueryChange: () => {},
+    input: createRef<HTMLInputElement>(),
+    pages: [],
+    openConversation: () => {},
+  };
+  try {
+    const mounted = render(
+      <SearchResults
+        {...props}
+        query="before:2026-10-01"
+        scopedChannelId={channel}
+      />,
+    );
+    expect(
+      await screen.findByRole("option", { name: /before the cutoff/ }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("option", { name: /after the cutoff/ }),
+    ).toBeNull();
+    expect(reads.at(-1)).toEqual([
+      expect.objectContaining({
+        "#h": [channel],
+        until: Math.floor(new Date(2026, 9, 1).getTime() / 1000) - 1,
+      }),
+    ]);
+    expect(reads.at(-1)?.[0]).not.toHaveProperty("search");
+    mounted.rerender(
+      <SearchResults
+        {...props}
+        query="after:2026-10-01"
+        scopedChannelId={channel}
+      />,
+    );
+    expect(
+      await screen.findByRole("option", { name: /after the cutoff/ }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("option", { name: /before the cutoff/ }),
+    ).toBeNull();
+    mounted.rerender(<SearchResults {...props} query="from:alice " />);
+    expect(
+      await screen.findByRole("option", { name: /after the cutoff/ }),
+    ).toBeVisible();
+    expect(reads.at(-1)).toEqual([
+      expect.objectContaining({ authors: [alice.pubkey] }),
+    ]);
+    expect(reads.at(-1)?.[0]).not.toHaveProperty("search");
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it.each(["from:ba", "from:@ba"])(
+  "%s opens the same prefix picker and never reads messages before identity selection",
+  async (query) => {
+    const relay = keypair(),
+      viewer = keypair(),
+      human = keypair();
+    const reads: Filter[][] = [];
+    const owner = createRelaySession({
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      query(filters) {
+        if (filters.some((filter) => filter.kinds?.includes(9)))
+          reads.push(filters as Filter[]);
+        if (filters.some((filter) => filter.kinds?.includes(0)))
+          return Promise.resolve([profile(human, { display_name: "Baxen" })]);
+        return Promise.resolve([]);
+      },
+    });
+    const change = vi.fn();
+    try {
+      render(
+        <SearchResults
+          session={owner.session}
+          query={query}
+          onQueryChange={change}
+          input={createRef()}
+          pages={[]}
+          openConversation={() => {}}
+        />,
+      );
+      const people = within(screen.getByRole("group", { name: "People" }));
+      const choice = await people.findByRole("option", { name: /Baxen/ });
+      expect(reads).toHaveLength(0);
+      fireEvent.click(choice);
+      expect(change).toHaveBeenCalledWith(`from:${human.pubkey} `);
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);
+
+it("requests a bounded prefix page before declaring a short name absent", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    wes = keypair();
+  const reads: Filter[][] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(0))) {
+        reads.push(filters as Filter[]);
+        return Promise.resolve([profile(wes, { display_name: "Wes" })]);
+      }
+      return Promise.resolve([]);
+    },
+  });
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="from:@we"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    expect(await screen.findByRole("option", { name: /Wes/ })).toBeVisible();
+    expect(reads).toContainEqual([
+      { kinds: [0], search: "we", search_mode: "prefix", limit: 40 },
+    ]);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it.each(["from:we", "from:@we"])(
+  "%s retains a confirmed channel member when global prefix lookup fails",
+  async (query) => {
+    const relay = keypair(),
+      viewer = keypair(),
+      wes = keypair();
+    const channel = "crew";
+    const discovery = [
+      metadata(relay, channel, "crew"),
+      roster(relay, channel, [viewer.pubkey, wes.pubkey]),
+    ];
+    const owner = createRelaySession({
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      query(filters) {
+        if (filters.some((filter) => filter.search === "we"))
+          return Promise.reject(new Error("prefix lookup unavailable"));
+        if (filters.some((filter) => filter.kinds?.includes(0)))
+          return Promise.resolve([profile(wes, { display_name: "Wes" })]);
+        return Promise.resolve(
+          discovery.filter((event) =>
+            filters.some((filter) => matchFilter(filter as Filter, event)),
+          ),
+        );
+      },
+    });
+    const change = vi.fn();
+    try {
+      render(
+        <SearchResults
+          session={owner.session}
+          query={query}
+          onQueryChange={change}
+          scopedChannelId={channel}
+          input={createRef()}
+          pages={[]}
+          openConversation={() => {}}
+        />,
+      );
+      const choice = await within(
+        screen.getByRole("group", { name: "People" }),
+      ).findByRole("option", { name: /Wes/ });
+      fireEvent.click(choice);
+      expect(change).toHaveBeenCalledWith(`from:${wes.pubkey} `);
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);
+
+it("distinguishes an unavailable global author lookup from no matching people", async () => {
+  const relay = keypair(),
+    viewer = keypair();
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query(filters) {
+      if (filters.some((filter) => filter.search === "we"))
+        return Promise.reject(new Error("prefix lookup unavailable"));
+      return Promise.resolve([]);
+    },
+  });
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="from:@we"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    expect(
+      await screen.findByText(
+        "People search is unavailable. Try a longer name.",
+      ),
+    ).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("offers a bounded from:@ picker with distinct identities and selects an exact author", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    first = keypair(),
+    second = keypair();
+  const discovery = [
+    metadata(relay, "crew", "crew"),
+    roster(relay, "crew", [viewer.pubkey]),
+  ];
+  const reads: Filter[][] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(0)))
+        return Promise.resolve([
+          profile(first, { display_name: "Baxen" }),
+          profile(second, { display_name: "Baxen" }),
+        ]);
+      if (filters.some((filter) => filter.kinds?.includes(9))) {
+        reads.push(filters as Filter[]);
+        return Promise.resolve([
+          message(second, "crew", "chosen author", 1700000010),
+        ]);
+      }
+      return Promise.resolve(
+        discovery.filter((event) =>
+          filters.some((filter) => matchFilter(filter as Filter, event)),
+        ),
+      );
+    },
+  });
+  const change = vi.fn();
+  try {
+    const mounted = render(
+      <SearchResults
+        session={owner.session}
+        query="from:@baxen"
+        onQueryChange={change}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(screen.getByRole("group", { name: "People" }));
+    expect(await people.findAllByRole("option")).toHaveLength(2);
+    expect(reads).toHaveLength(0);
+    mounted.rerender(
+      <SearchResults
+        session={owner.session}
+        query="from:baxen"
+        onQueryChange={change}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const ambiguous = within(
+      await screen.findByRole("group", { name: "People" }),
+    );
+    expect(await ambiguous.findAllByRole("option")).toHaveLength(2);
+    expect(reads).toHaveLength(0);
+    fireEvent.click(ambiguous.getAllByRole("option")[1] as HTMLElement);
+    expect(change).toHaveBeenCalledWith(`from:${second.pubkey} `);
+    mounted.rerender(
+      <SearchResults
+        session={owner.session}
+        query={`from:${second.pubkey} `}
+        onQueryChange={change}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    expect(
+      await screen.findByRole("option", { name: /chosen author/ }),
+    ).toBeVisible();
+    expect(reads.at(-1)).toEqual([
+      expect.objectContaining({ authors: [second.pubkey] }),
+    ]);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("prioritizes people, separates agents, shows profile avatars, and excludes archived identities", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    human = keypair(),
+    agent = keypair(),
+    archived = keypair();
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(0)))
+        return Promise.resolve([
+          profile(agent, {
+            display_name: "Agent",
+            is_agent: true,
+            picture: "https://example.com/agent.png",
+          }),
+          profile(archived, { display_name: "Archived", is_agent: true }),
+          profile(human, {
+            display_name: "Alice",
+            picture: "https://example.com/human.png",
+          }),
+        ]);
+      return Promise.resolve([]);
+    },
+  });
+  const session = {
+    ...owner.session,
+    archives: {
+      ...owner.session.archives,
+      state: (key: string) =>
+        key === archived.pubkey ? ("archived" as const) : ("active" as const),
+    },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:@a"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(screen.getByRole("group", { name: "People" }));
+    const person = await people.findByRole("option", { name: /Alice/ });
+    expect(person).toBeVisible();
+    expect(
+      person.querySelector('img[src="https://example.com/human.png"]'),
+    ).not.toBeNull();
+    const agents = within(screen.getByRole("group", { name: "Agents" }));
+    const choice = await agents.findByRole("option", { name: /Agent/ });
+    expect(choice).toBeVisible();
+    expect(
+      choice.querySelector('img[src="https://example.com/agent.png"]'),
+    ).not.toBeNull();
+    expect(agents.queryByRole("option", { name: /Archived/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /Archived/ })).toBeNull();
+    expect(
+      [...document.querySelectorAll('[role="option"]')].indexOf(person),
+    ).toBeLessThan(
+      [...document.querySelectorAll('[role="option"]')].indexOf(choice),
+    );
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("opens the identity picker for bare from: without an unfiltered message read", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    human = keypair();
+  const reads: Filter[][] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(9)))
+        reads.push(filters as Filter[]);
+      if (filters.some((filter) => filter.kinds?.includes(0)))
+        return Promise.resolve([profile(human, { display_name: "Alice" })]);
+      return Promise.resolve([]);
+    },
+  });
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="from:"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    expect(screen.getByRole("group", { name: "People" })).toBeVisible();
+    expect(screen.queryByRole("group", { name: "Most relevant" })).toBeNull();
+    expect(reads).toHaveLength(0);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it.each([
+  "from:baxen deploy",
+  "from:@baxen ",
+  "deploy from:baxen after:2024-01-15",
+])(
+  "resolves a completed ambiguous %s without losing surrounding query text",
+  async (query) => {
+    const relay = keypair(),
+      viewer = keypair(),
+      first = keypair(),
+      second = keypair();
+    const owner = createRelaySession({
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      query(filters) {
+        if (filters.some((filter) => filter.kinds?.includes(0)))
+          return Promise.resolve([
+            profile(first, { display_name: "Baxen" }),
+            profile(second, { display_name: "Baxen" }),
+          ]);
+        return Promise.resolve([]);
+      },
+    });
+    const change = vi.fn();
+    try {
+      render(
+        <SearchResults
+          session={owner.session}
+          query={query}
+          onQueryChange={change}
+          input={createRef()}
+          pages={[]}
+          openConversation={() => {}}
+        />,
+      );
+      const people = within(
+        await screen.findByRole("group", { name: "People" }),
+      );
+      expect(await people.findAllByRole("option")).toHaveLength(2);
+      fireEvent.click(people.getAllByRole("option")[1] as HTMLElement);
+      expect(change).toHaveBeenCalledWith(
+        query.replace(/from:@?baxen/i, `from:${second.pubkey}`),
+      );
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);
+
+it("adds a late shared agent without another keystroke or prefix read", async () => {
+  vi.useFakeTimers();
+  const relay = keypair(),
+    viewer = keypair(),
+    agent = keypair();
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    async query() {
+      return [];
+    },
+  });
+  const reads = vi.fn(async () => []);
+  const source = owner.session.agentChoices;
+  const listeners = new Set<() => void>();
+  let choices = source.snapshot();
+  const session = {
+    ...owner.session,
+    read: reads,
+    agentChoices: {
+      ...source,
+      snapshot: () => choices,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      retain: () => () => {},
+      ensure: () => {},
+    },
+  } as typeof owner.session;
+  try {
+    render(
+      <SearchResults
+        session={session}
+        query="from:late"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180);
+    });
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("group", { name: "Agents" })).toBeNull();
+    act(() => {
+      choices = {
+        ...choices,
+        identities: [
+          { pubkey: agent.pubkey, name: "Late Agent", managed: false },
+        ],
+        selectable: [
+          { pubkey: agent.pubkey, name: "Late Agent", managed: false },
+        ],
+      };
+      for (const listener of listeners) listener();
+    });
+    expect(
+      within(screen.getByRole("group", { name: "Agents" })).getByRole(
+        "option",
+        { name: /Late Agent/ },
+      ),
+    ).toBeVisible();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180);
+    });
+    expect(reads).toHaveBeenCalledTimes(1);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it.each([
+  ["from:alice", "from:bob", ""],
+  [
+    "deploy in:crew after:2026-10-01 from:alice",
+    "deploy in:crew after:2026-10-01 from:bob",
+    "deploy in:crew after:2026-10-01 ",
+  ],
+])(
+  "replaces author chip in %s without leaking or restoring its filter",
+  async (initial, typed, remaining) => {
+    const relay = keypair(),
+      viewer = keypair(),
+      alice = keypair(),
+      bob = keypair();
+    const reads: Filter[][] = [];
+    const changes: string[] = [];
+    const owner = createRelaySession({
+      ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+      query(filters) {
+        if (filters.some((filter) => filter.kinds?.includes(0)))
+          return Promise.resolve([
+            profile(alice, { display_name: "Alice" }),
+            profile(bob, { display_name: "Bob" }),
+          ]);
+        if (filters.some((filter) => filter.kinds?.includes(9)))
+          reads.push(filters as Filter[]);
+        return Promise.resolve(
+          [
+            metadata(relay, "crew", "crew"),
+            roster(relay, "crew", [viewer.pubkey]),
+          ].filter((event) =>
+            filters.some((filter) => matchFilter(filter as Filter, event)),
+          ),
+        );
+      },
+    });
+    function Search() {
+      const [query, setQuery] = useState(initial);
+      return (
+        <SearchResults
+          session={owner.session}
+          query={query}
+          onQueryChange={(next) => {
+            changes.push(next);
+            setQuery(next);
+          }}
+          input={createRef()}
+          pages={[]}
+          openConversation={() => {}}
+        />
+      );
+    }
+    try {
+      render(<Search />);
+      fireEvent.click(
+        await within(screen.getByRole("group", { name: "People" })).findByRole(
+          "option",
+          { name: /Alice/ },
+        ),
+      );
+      const input = screen.getByRole("combobox", { name: "Search Buzz" });
+      expect(
+        screen.getByRole("button", { name: "Remove author Alice" }),
+      ).toBeVisible();
+      fireEvent.change(input, {
+        target: { value: typed },
+      });
+      fireEvent.click(
+        await within(screen.getByRole("group", { name: "People" })).findByRole(
+          "option",
+          { name: /Bob/ },
+        ),
+      );
+      expect(
+        screen.queryByRole("button", { name: "Remove author Alice" }),
+      ).toBeNull();
+      expect(input).toHaveValue(remaining);
+      expect((input as HTMLInputElement).value).not.toContain(alice.pubkey);
+      await waitFor(() =>
+        expect(reads.at(-1)?.[0]).toMatchObject({ authors: [bob.pubkey] }),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Remove author Bob" }),
+      );
+      expect(input).toHaveValue(remaining);
+      expect((input as HTMLInputElement).value).not.toContain(alice.pubkey);
+      expect((input as HTMLInputElement).value).not.toContain(bob.pubkey);
+      expect(changes.at(-1)).toBe(remaining);
+      if (remaining) {
+        await waitFor(() =>
+          expect(reads.at(-1)?.[0]).not.toHaveProperty("authors"),
+        );
+      }
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);
+
+it("renders from:<author chip> without exposing the signed operand in the input", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    human = keypair();
+  const reads: Filter[][] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(0)))
+        return Promise.resolve([profile(human, { display_name: "Wes" })]);
+      if (filters.some((filter) => filter.kinds?.includes(9)))
+        reads.push(filters as Filter[]);
+      return Promise.resolve([]);
+    },
+  });
+  function Search() {
+    const [query, setQuery] = useState("from:@wes");
+    return (
+      <SearchResults
+        session={owner.session}
+        query={query}
+        onQueryChange={setQuery}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />
+    );
+  }
+  try {
+    render(<Search />);
+    fireEvent.click(
+      await within(screen.getByRole("group", { name: "People" })).findByRole(
+        "option",
+        { name: /Wes/ },
+      ),
+    );
+    const chip = screen.getByRole("button", { name: "Remove author Wes" });
+    expect(chip).toHaveTextContent("from:@Wes");
+    expect(chip).toHaveAttribute("title", npubEncode(human.pubkey));
+    const input = screen.getByRole("combobox", { name: "Search Buzz" });
+    expect(input).toHaveValue("");
+    expect(input).toHaveFocus();
+    expect(chip.closest(".buzz-input-group")).toContainElement(input);
+    await waitFor(() =>
+      expect(reads.at(-1)?.[0]).toMatchObject({ authors: [human.pubkey] }),
+    );
+    fireEvent.change(input, { target: { value: "before:" } });
+    fireEvent.click(
+      within(screen.getByRole("group", { name: "Dates" })).getByRole("option", {
+        name: /Yesterday/,
+      }),
+    );
+    expect(chip).toBeVisible();
+    expect((input as HTMLInputElement).value).toMatch(
+      /^before:\d{4}-\d{2}-\d{2} ?$/,
+    );
+    expect((input as HTMLInputElement).value).not.toContain(human.pubkey);
+    await waitFor(() =>
+      expect(reads.at(-1)?.[0]).toMatchObject({ authors: [human.pubkey] }),
+    );
+    fireEvent.change(input, { target: { value: "deploy" } });
+    expect(input).toHaveValue("deploy");
+    expect(chip).toBeVisible();
+    await waitFor(() =>
+      expect(reads.at(-1)?.[0]).toMatchObject({
+        authors: [human.pubkey],
+        search: "deploy",
+      }),
+    );
+    fireEvent.click(chip);
+    expect(
+      screen.queryByRole("button", { name: "Remove author Wes" }),
+    ).toBeNull();
+    expect(input).toHaveValue("deploy");
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("keeps both exact authors selectable ahead of a crowded prefix page", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    first = keypair(),
+    second = keypair();
+  const prefixes = Array.from({ length: 12 }, () => keypair());
+  const reads: Filter[][] = [];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(9)))
+        reads.push(filters as Filter[]);
+      if (filters.some((filter) => filter.kinds?.includes(0)))
+        return Promise.resolve([
+          ...prefixes.map((person, index) =>
+            profile(person, { display_name: `Samantha ${index}` }),
+          ),
+          profile(first, { display_name: "Sam" }),
+          profile(second, { display_name: "Sam" }),
+        ]);
+      return Promise.resolve([]);
+    },
+  });
+  const change = vi.fn();
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="from:sam deploy"
+        onQueryChange={change}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const people = within(await screen.findByRole("group", { name: "People" }));
+    await waitFor(() => expect(people.getAllByRole("option")).toHaveLength(12));
+    for (const pubkey of [first.pubkey, second.pubkey]) {
+      expect(
+        people.getByRole("option", { name: new RegExp(pubkey.slice(0, 12)) }),
+      ).toBeVisible();
+    }
+    expect(reads).toHaveLength(0);
+    fireEvent.click(
+      people.getByRole("option", {
+        name: new RegExp(second.pubkey.slice(0, 12)),
+      }),
+    );
+    expect(change).toHaveBeenCalledExactlyOnceWith(
+      `from:${second.pubkey} deploy`,
+    );
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("keeps a person visible when agent candidates exceed the picker cap", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    human = keypair();
+  const agents = Array.from({ length: 12 }, () => keypair());
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query(filters) {
+      if (filters.some((filter) => filter.kinds?.includes(0)))
+        return Promise.resolve([
+          ...agents.map((agent) =>
+            profile(agent, { display_name: "Agent", is_agent: true }),
+          ),
+          profile(human, { display_name: "Alice" }),
+        ]);
+      return Promise.resolve([]);
+    },
+  });
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="from:a"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    expect(
+      await within(screen.getByRole("group", { name: "People" })).findByRole(
+        "option",
+        { name: /Alice/ },
+      ),
+    ).toBeVisible();
+    expect(screen.getAllByRole("option")).toHaveLength(12);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("retains a member of the in: channel when global author lookup fails", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    wes = keypair();
+  const discovery = [
+    metadata(relay, "crew", "crew"),
+    roster(relay, "crew", [viewer.pubkey, wes.pubkey]),
+  ];
+  const owner = createRelaySession({
+    ...scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+    query(filters) {
+      if (filters.some((filter) => filter.search === "we"))
+        return Promise.reject(new Error("prefix lookup unavailable"));
+      if (filters.some((filter) => filter.kinds?.includes(0)))
+        return Promise.resolve([profile(wes, { display_name: "Wes" })]);
+      return Promise.resolve(
+        discovery.filter((event) =>
+          filters.some((filter) => matchFilter(filter as Filter, event)),
+        ),
+      );
+    },
+  });
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="in:#crew from:we"
+        onQueryChange={vi.fn()}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    expect(
+      await within(screen.getByRole("group", { name: "People" })).findByRole(
+        "option",
+        { name: /Wes/ },
+      ),
+    ).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("shows only the requested date suggestions and inserts local calendar dates", async () => {
+  const relay = keypair(),
+    viewer = keypair();
+  const owner = createRelaySession(
+    scriptedTransport(viewer.pubkey, relay.pubkey).transport,
+  );
+  const change = vi.fn();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(2026, 9, 5, 12));
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="after:"
+        onQueryChange={change}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    const dates = within(screen.getByRole("group", { name: "Dates" }));
+    expect(
+      dates.getAllByRole("option").map((option) => option.textContent),
+    ).toEqual([
+      "Today2026-10-05",
+      "Yesterday2026-10-04",
+      "This week2026-10-05",
+      "Last week2026-09-28",
+      "This month2026-10-01",
+    ]);
+    fireEvent.click(dates.getByRole("option", { name: /Last week/ }));
+    expect(change).toHaveBeenCalledWith("after:2026-09-28 ");
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("never widens a search when a name or channel operator is unresolved", async () => {
+  vi.useFakeTimers();
+  const relay = keypair(),
+    viewer = keypair();
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+  const owner = createRelaySession({
+    ...wire.transport,
+    query(filters, signal) {
+      if (filters.some((filter) => filter.search !== undefined))
+        return wire.transport.query(filters, signal);
+      return Promise.resolve(
+        [
+          metadata(relay, "crew", "crew"),
+          roster(relay, "crew", [viewer.pubkey]),
+        ].filter((event) =>
+          filters.some((filter) => filter.kinds?.includes(event.kind)),
+        ),
+      );
+    },
+  });
+  try {
+    const { rerender } = render(
+      <SearchResults
+        session={owner.session}
+        query="deploy from:@missing"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        scopedChannelId="crew"
+        openConversation={() => {}}
+      />,
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(180));
+    const users = wire.next();
+    expect(users.filters[0]?.kinds).toEqual([0]);
+    await act(async () => users.respond([]));
+    expect(
+      wire.pending.filter((request) =>
+        request.filters.some((filter) => filter.kinds?.includes(9)),
+      ),
+    ).toHaveLength(0);
+    for (const request of wire.pending.splice(0)) request.respond([]);
+    rerender(
+      <SearchResults
+        session={owner.session}
+        query="deploy in:#missing"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(180));
+    expect(
+      wire.pending.filter((request) =>
+        request.filters.some((filter) => filter.kinds?.includes(9)),
+      ),
+    ).toHaveLength(0);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it.each(["private", "missing"])(
+  "revalidates a retained public preview before an in: search when metadata becomes %s",
+  async (change) => {
+    const relay = keypair(),
+      viewer = keypair();
+    const id = "12345678-1234-1234-1234-123456789abc";
+    const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+    const publicMeta = metadata(relay, id, "Public", 1700000000, [
+      ["public", ""],
+    ]);
+    const privateMeta = metadata(relay, id, "Private", 1700000001, [
+      ["private", ""],
+    ]);
+    let current = publicMeta;
+    let revoked = false;
+    const scopedReads: Filter[][] = [];
+    let exactReads = 0;
+    const owner = createRelaySession({
+      ...wire.transport,
+      async query(filters) {
+        if (filters.some((filter) => filter.search !== undefined)) {
+          scopedReads.push(filters as Filter[]);
+          return [message(viewer, id, "stale secret hit", 1700000002)];
+        }
+        if (filters.some((filter) => filter["#d"]?.includes(id))) {
+          exactReads++;
+          return revoked
+            ? change === "missing"
+              ? []
+              : [current]
+            : [publicMeta];
+        }
+        return [publicMeta].filter((event) =>
+          filters.some((filter) => matchFilter(filter as Filter, event)),
+        );
+      },
+    });
+    try {
+      const props = {
+        session: owner.session,
+        onQueryChange: () => {},
+        input: createRef<HTMLInputElement>(),
+        pages: [],
+        openConversation: () => {},
+      };
+      const mounted = render(<SearchResults {...props} query="Public" />);
+      await screen.findByRole("option", {
+        name: /Public channel · not joined/,
+      });
+      expect(owner.session.channels.get?.(id)?.readOnly).toBe(true);
+      const beforeRevalidation = exactReads;
+      scopedReads.length = 0;
+      vi.useFakeTimers();
+      current = privateMeta;
+      revoked = true;
+      mounted.rerender(<SearchResults {...props} query={`secret in:${id}`} />);
+      await act(async () => vi.advanceTimersByTimeAsync(180));
+      expect(exactReads).toBeGreaterThan(beforeRevalidation);
+      expect(scopedReads).toHaveLength(0);
+      expect(owner.session.channels.get?.(id)).toBeUndefined();
+      expect(
+        screen.queryByRole("option", { name: /stale secret hit/ }),
+      ).toBeNull();
+    } finally {
+      cleanup();
+      owner.dispose();
+    }
+  },
+);
+
+it("resolves an exact public name beyond eight preceding substring matches and reports page coverage", async () => {
+  const relay = keypair(),
+    viewer = keypair();
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+  const names = [
+    "a-dev",
+    "b-dev",
+    "c-dev",
+    "d-dev",
+    "android-dev",
+    "backend-dev",
+    "core-dev",
+    "data-dev",
+    "dev",
+  ];
+  const discovery = names.map((name) =>
+    metadata(relay, name, name, 1700000000, [
+      ["public", ""],
+      ["t", "stream"],
+    ]),
+  );
+  // A full first page means an exact-name miss outside it cannot be declared exhaustive.
+  for (let i = 0; i < 491; i++)
+    discovery.push(
+      metadata(relay, `extra-${i}`, `extra-${i}`, 1700000000, [
+        ["public", ""],
+        ["t", "stream"],
+      ]),
+    );
+  const reads: Filter[][] = [];
+  const owner = createRelaySession({
+    ...wire.transport,
+    async query(filters) {
+      if (filters.some((filter) => filter.search !== undefined)) {
+        reads.push(filters as Filter[]);
+        return [message(viewer, "dev", "deploy found", 1700000001)];
+      }
+      return discovery.filter((event) =>
+        filters.some((filter) => matchFilter(filter as Filter, event)),
+      );
+    },
+  });
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="deploy in:#dev"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    expect(
+      await screen.findByRole("option", { name: /deploy found/ }),
+    ).toBeVisible();
+    expect(reads).toContainEqual([
+      expect.objectContaining({ "#h": ["dev"], search: "deploy" }),
+    ]);
+    expect(
+      screen.getByText(
+        "Public channel results include only the first page of channels.",
+      ),
+    ).toBeVisible();
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("keeps a pending in: lookup pending, then retries its failure and resumes scoped search", async () => {
+  const relay = keypair(),
+    viewer = keypair();
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+  const discovery = [
+    metadata(relay, "dev", "dev", 1700000000, [["public", ""]]),
+  ];
+  let failLookup!: (error: Error) => void;
+  let lookupStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    lookupStarted = resolve;
+  });
+  const pending = new Promise<typeof discovery>((_resolve, reject) => {
+    failLookup = reject;
+  });
+  let failures = 1;
+  const reads: Filter[][] = [];
+  const owner = createRelaySession({
+    ...wire.transport,
+    query(filters) {
+      if (filters.some((filter) => filter.search !== undefined)) {
+        reads.push(filters as Filter[]);
+        return Promise.resolve([
+          message(viewer, "dev", "deploy found", 1700000001),
+        ]);
+      }
+      if (
+        filters.some(
+          (filter) => filter.kinds?.includes(39000) && !filter["#d"],
+        ) &&
+        failures-- > 0
+      ) {
+        lookupStarted();
+        return pending;
+      }
+      return Promise.resolve(
+        discovery.filter((event) =>
+          filters.some((filter) => matchFilter(filter as Filter, event)),
+        ),
+      );
+    },
+  });
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="deploy in:#dev"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    await started;
+    expect(screen.getByText("Searching messages…")).toBeVisible();
+    expect(
+      screen.queryByText("No matching messages in accessible conversations."),
+    ).toBeNull();
+    await act(async () => failLookup(new Error("network down")));
+    expect(
+      await screen.findByText(
+        /Public channel search couldn’t finish: network down/,
+      ),
+    ).toBeVisible();
+    expect(screen.getByText("Message search is unavailable.")).toBeVisible();
+    expect(reads).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Retry channels" }));
+    expect(
+      await screen.findByRole("option", { name: /deploy found/ }),
+    ).toBeVisible();
+    expect(reads).toContainEqual([expect.objectContaining({ "#h": ["dev"] })]);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("matches an in: operator against the rendered DM participant label", async () => {
+  const relay = keypair(),
+    viewer = keypair(),
+    alice = keypair();
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+  const discovery = [
+    metadata(relay, "dm", "opaque", 1700000000, [
+      ["t", "dm"],
+      ["private", ""],
+    ]),
+    roster(relay, "dm", [viewer.pubkey, alice.pubkey]),
+    profile(alice, { name: "Alice" }),
+  ];
+  const reads: Filter[][] = [];
+  const owner = createRelaySession({
+    ...wire.transport,
+    async query(filters) {
+      if (filters.some((filter) => filter.search !== undefined)) {
+        reads.push(filters as Filter[]);
+        return [message(alice, "dm", "deploy to Alice", 1700000001)];
+      }
+      return discovery.filter((event) =>
+        filters.some((filter) => matchFilter(filter as Filter, event)),
+      );
+    },
+  });
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="deploy in:alice"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    expect(
+      await screen.findByRole("option", { name: /deploy to Alice/ }),
+    ).toBeVisible();
+    expect(reads).toContainEqual([expect.objectContaining({ "#h": ["dm"] })]);
+  } finally {
+    cleanup();
+    owner.dispose();
+  }
+});
+
+it("treats bare in:# as no channel operator", async () => {
+  const relay = keypair(),
+    viewer = keypair();
+  const wire = scriptedTransport(viewer.pubkey, relay.pubkey);
+  const reads: Filter[][] = [];
+  const owner = createRelaySession({
+    ...wire.transport,
+    async query(filters) {
+      if (filters.some((filter) => filter.search !== undefined)) {
+        reads.push(filters as Filter[]);
+        return [message(viewer, "crew", "hello world", 1700000001)];
+      }
+      return [
+        metadata(relay, "crew", "crew"),
+        roster(relay, "crew", [viewer.pubkey]),
+      ].filter((event) =>
+        filters.some((filter) => matchFilter(filter as Filter, event)),
+      );
+    },
+  });
+  try {
+    render(
+      <SearchResults
+        session={owner.session}
+        query="hello in:#"
+        onQueryChange={() => {}}
+        input={createRef()}
+        pages={[]}
+        openConversation={() => {}}
+      />,
+    );
+    expect(
+      await screen.findByRole("option", { name: /hello world/ }),
+    ).toBeVisible();
+    expect(reads).toContainEqual([
+      expect.not.objectContaining({ "#h": expect.anything() }),
+    ]);
+  } finally {
+    cleanup();
+    owner.dispose();
   }
 });

@@ -15,20 +15,25 @@ export function usePublicChannelSearch(
   session: RelaySession,
   query: string,
   ready: boolean,
+  exact = false,
 ) {
   const [attempt, setAttempt] = useState(0);
   const [result, setResult] = useState<Result>();
   const search = session.channels.searchPublic;
   const owner = useMemo(
-    () => ({ session, query, attempt }),
-    [session, query, attempt],
+    () => ({ session, query, exact, attempt }),
+    [session, query, exact, attempt],
   );
   useEffect(() => {
     if (!query || !ready || !search) return;
     const controller = new AbortController();
     // Typeahead waits for a brief typing pause; cancellation also owns the delay.
     const timer = setTimeout(() => {
-      search(query, { signal: controller.signal, priority: "foreground" }).then(
+      search(query, {
+        signal: controller.signal,
+        priority: "foreground",
+        exact,
+      }).then(
         ({ channels, partial }) => {
           if (!controller.signal.aborted)
             setResult({ owner, channels, partial });
@@ -48,9 +53,10 @@ export function usePublicChannelSearch(
       clearTimeout(timer);
       controller.abort();
     };
-  }, [query, ready, search, owner]);
+  }, [query, ready, search, exact, owner]);
   const current = result?.owner === owner ? result : undefined;
   return {
+    loading: !!query && ready && !!search && !current,
     // A channel joined or removed since the lookup leaves this result set.
     channels: (current?.channels ?? []).filter(
       (channel) => session.channels.get?.(channel.id)?.readOnly,

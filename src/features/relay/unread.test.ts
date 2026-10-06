@@ -371,7 +371,7 @@ it("promotes mentions, broadcasts and participating-thread replies without promo
   ).toMatchObject({ status: "unknown", unread: true });
 });
 
-it("counts replies only in the viewer's conversations; nested threads stay quiet until joined or mentioned", async () => {
+it("counts replies only in the viewer's conversations and threads; others stay quiet until joined or mentioned", async () => {
   const h = setup();
   h.grant("room");
   const reply = (
@@ -402,35 +402,44 @@ it("counts replies only in the viewer's conversations; nested threads stay quiet
     unread: true,
   });
   expect(unread(answer.id)).toMatchObject({ category: "thread", unread: true });
-  expect(unread(nested.id)).toMatchObject({ unread: false });
-  expect(unread(nested.id).category).toBeUndefined();
+  // Replying anywhere under a root joins its whole thread.
+  expect(unread(nested.id)).toMatchObject({ category: "thread", unread: true });
   expect(unread(unjoined.id)).toMatchObject({ unread: false });
-  // Top-level root + other root + sibling + answer.
-  expect(h.snapshot()).toMatchObject({ observedCount: 4, attentionCount: 2 });
+  expect(unread(unjoined.id).category).toBeUndefined();
+  // Top-level root + other root + sibling + answer + nested.
+  expect(h.snapshot()).toMatchObject({ observedCount: 5, attentionCount: 3 });
   expect(
     h.session.unread.snapshot({
       kind: "thread",
       channelId: "room",
       rootId: root.id,
     }).observedCount,
-  ).toBe(2);
+  ).toBe(3);
   expect(h.session.unread.activity("room").items).toEqual([
-    expect.objectContaining({ rootId: root.id, unreadCount: 2 }),
+    expect.objectContaining({ rootId: root.id, unreadCount: 3 }),
   ]);
 
-  const mention = reply(h.alice, "nested mention", 17, root.id, answer.id, [
-    ["p", h.viewer.pubkey],
-  ]);
+  const mention = reply(
+    h.alice,
+    "unjoined mention",
+    17,
+    otherRoot.id,
+    unjoined.id,
+    [["p", h.viewer.pubkey]],
+  );
   h.emit([mention]);
   expect(unread(mention.id)).toMatchObject({
     category: "mention",
     unread: true,
   });
 
-  // Joining the nested conversation makes its replies count.
-  h.emit([reply(h.viewer, "joining", 18, root.id, answer.id)]);
-  expect(unread(nested.id)).toMatchObject({ category: "thread", unread: true });
-  expect(h.snapshot()).toMatchObject({ observedCount: 6, attentionCount: 4 });
+  // Joining the other thread makes its replies count.
+  h.emit([reply(h.viewer, "joining", 18, otherRoot.id, unjoined.id)]);
+  expect(unread(unjoined.id)).toMatchObject({
+    category: "thread",
+    unread: true,
+  });
+  expect(h.snapshot()).toMatchObject({ observedCount: 7, attentionCount: 5 });
 });
 
 it("late DM metadata updates an existing attention selector without expiring reading intent", async () => {
