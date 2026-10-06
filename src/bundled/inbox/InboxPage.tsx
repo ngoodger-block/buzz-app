@@ -31,7 +31,7 @@ import {
   PanelHeader,
   PanelHeaderLabel,
 } from "../../shared/design-system/ui/PanelHeader";
-import { BellIcon } from "../../shared/design-system/icons";
+import { QuestionIcon, BellIcon } from "../../shared/design-system/icons";
 import { Select } from "../../shared/design-system/ui/Select";
 import {
   ContextMenuRoot,
@@ -550,20 +550,41 @@ export function InboxView({
           <PanelHeaderLabel title="Inbox" icon={<BellIcon size="1rem" />} />
         }
         actions={
-          <>
+          <div className={styles.headerActions}>
             {!drafts && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  cancelRetry();
-                  setSelectedTarget(undefined);
-                  setArchivedView((current) => !current);
-                  setLimit(50);
-                }}
-              >
-                {archivedView ? "Back to Inbox" : "Archived"}
-              </Button>
+              <>
+                <fieldset className={styles.scopeSwitch}>
+                  <legend className="sr-only">Inbox scope</legend>
+                  {[
+                    { archived: false, label: "Inbox" },
+                    { archived: true, label: "Archived" },
+                  ].map(({ archived: value, label }) => (
+                    <Button
+                      key={label}
+                      size="sm"
+                      variant={archivedView === value ? "inverted" : "ghost"}
+                      aria-pressed={archivedView === value}
+                      onClick={() => {
+                        if (archivedView === value) return;
+                        cancelRetry();
+                        setSelectedTarget(undefined);
+                        setArchivedView(value);
+                        setLimit(50);
+                      }}
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                </fieldset>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label="About Inbox archive"
+                  title="Archive choices are saved on this device for this account and community. They don’t sync to your other devices."
+                >
+                  <QuestionIcon size="1rem" aria-hidden="true" />
+                </Button>
+              </>
             )}
             <Button
               size="sm"
@@ -578,7 +599,7 @@ export function InboxView({
                 {drafts ? "Back to Inbox" : "Drafts"}
               </span>
             </Button>
-          </>
+          </div>
         }
       />
       {!drafts && failure && (

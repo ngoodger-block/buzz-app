@@ -88,7 +88,12 @@ it("archives a conversation durably, restores it, and reopens only for a new men
   );
   fireEvent.click(screen.getByRole("button", { name: "Restore conversation" }));
   await waitFor(() => expect(rows().queryAllByRole("button")).toHaveLength(0));
-  fireEvent.click(screen.getByRole("button", { name: "Back to Inbox" }));
+  fireEvent.click(
+    within(screen.getByRole("group", { name: "Inbox scope" })).getByRole(
+      "button",
+      { name: /^Inbox$/ },
+    ),
+  );
   await waitFor(() => expect(rows().getAllByRole("button")).toHaveLength(2));
   const restoredRow = rows()
     .getAllByRole("button")
@@ -1312,6 +1317,77 @@ it.each([true, false])(
     ).toHaveFocus();
   },
 );
+
+it("shows the separate Inbox scope without resetting attention filters", async () => {
+  const h = fixture({ withSenders: true });
+  render(h.view);
+  await screen.findByText("Public agent mention");
+  await waitFor(() => expect(rows().length).toBeGreaterThan(0));
+
+  const scope = screen.getByRole("group", { name: "Inbox scope" });
+  const inboxButton = within(scope).getByRole("button", { name: "Inbox" });
+  const archivedButton = within(scope).getByRole("button", {
+    name: "Archived",
+  });
+  expect(inboxButton).toHaveAttribute("aria-pressed", "true");
+  expect(archivedButton).toHaveAttribute("aria-pressed", "false");
+  expect(
+    screen.getByRole("button", { name: "About Inbox archive" }),
+  ).toBeInTheDocument();
+  fireEvent.focus(screen.getByRole("button", { name: "About Inbox archive" }));
+  expect(await screen.findByRole("tooltip")).toHaveTextContent(
+    "Archive choices are saved on this device for this account and community. They don’t sync to your other devices.",
+  );
+
+  await chooseFilter("Mentions");
+  expect(rows().some((row) => row.textContent?.includes("Agent mention"))).toBe(
+    true,
+  );
+  await chooseFilter("Agents", "Sender");
+  await waitFor(() => expect(rows()).toHaveLength(2));
+  const agentRow = rows().find((row) =>
+    row.textContent?.includes("Agent mention"),
+  );
+  if (!agentRow) throw new Error("Missing agent-authored mention");
+  fireEvent.click(screen.getByRole("checkbox", { name: "Unread only" }));
+  expect(screen.getByRole("checkbox", { name: "Unread only" })).toBeChecked();
+  const agentOpen = within(agentRow).getByRole("button", { name: /^Open / });
+  agentOpen.focus();
+  fireEvent.keyDown(agentOpen, { key: "F10", shiftKey: true });
+  fireEvent.click(
+    await screen.findByRole("menuitem", { name: "Archive conversation" }),
+  );
+  await waitFor(() => expect(rows()).toHaveLength(1));
+
+  expect(archivedButton).toHaveAttribute("aria-pressed", "false");
+  fireEvent.click(archivedButton);
+  await waitFor(() => expect(rows()).toHaveLength(1));
+  expect(archivedButton).toHaveAttribute("aria-pressed", "true");
+  expect(
+    screen.getByRole("combobox", { name: "Activity type" }),
+  ).toHaveTextContent("Mentions");
+  expect(screen.getByRole("combobox", { name: "Sender" })).toHaveTextContent(
+    "Agents",
+  );
+  expect(screen.getByRole("checkbox", { name: "Unread only" })).toBeChecked();
+
+  fireEvent.click(inboxButton);
+  await waitFor(() => expect(rows()).toHaveLength(1));
+  expect(inboxButton).toHaveAttribute("aria-pressed", "true");
+  expect(archivedButton).toHaveAttribute("aria-pressed", "false");
+  expect(
+    screen.getByRole("combobox", { name: "Activity type" }),
+  ).toHaveTextContent("Mentions");
+  expect(screen.getByRole("combobox", { name: "Sender" })).toHaveTextContent(
+    "Agents",
+  );
+  expect(screen.getByRole("checkbox", { name: "Unread only" })).toBeChecked();
+
+  fireEvent.click(archivedButton);
+  await waitFor(() => expect(rows()).toHaveLength(1));
+  expect(archivedButton).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("checkbox", { name: "Unread only" })).toBeChecked();
+});
 
 it("shows two accessible filters without removed options, bulk action or coverage boilerplate", async () => {
   const h = fixture();

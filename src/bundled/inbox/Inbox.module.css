@@ -147,6 +147,23 @@
   margin-inline-start: auto;
 }
 
+/* Scope is navigation, independent from the attention filters below. */
+.headerActions,
+.scopeSwitch {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.scopeSwitch {
+  padding: var(--space-half);
+  margin: 0;
+  min-width: 0;
+  border: 0;
+  border-radius: var(--radius-capsule);
+  background: var(--surface-inset);
+}
+
 .scroll {
   flex: 1;
   min-height: 0;
