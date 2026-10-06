@@ -70,9 +70,10 @@ export function RemindersPage({
       : "Connect to a community to see your reminders."
     : state.status === "loading"
       ? "Loading reminders…"
-      : state.status === "error"
-        ? (state.error ?? "Reminders could not be loaded.")
-        : undefined;
+      : undefined;
+  // Live arrivals can fill the list after a failed read; history stays
+  // incomplete, and due notifications held, until a read succeeds.
+  const incomplete = reminders && !state.hydrated && state.status !== "loading";
   return (
     <div className="h-full min-h-0">
       <FullPageSurface aria-label="Reminders">
@@ -90,11 +91,19 @@ export function RemindersPage({
               {error}
             </p>
           )}
+          {incomplete && (
+            <div role="alert" className={styles.notice}>
+              <p>Some reminders could not be loaded.</p>
+              <Button onClick={() => void reminders.refresh()}>
+                Retry reminders
+              </Button>
+            </div>
+          )}
           {status || !reminders ? (
             <p role="status" className={styles.notice}>
               {status}
             </p>
-          ) : !groups.length ? (
+          ) : incomplete && !state.reminders.length ? null : !groups.length ? (
             <EmptyState
               icon={<AlarmIcon size="1.5rem" aria-hidden="true" />}
               title="No reminders"

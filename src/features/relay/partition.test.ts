@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createRelaySession } from "./session";
 import {
   relayPartition,
+  splitPartition,
   transportOrigin,
   transportPartition,
 } from "./partition";
@@ -117,4 +118,14 @@ it("opens every session-owned partition with the exact existing bytes", () => {
     setup: [],
     choices: ["undefined:undefined"],
   });
+});
+
+it("splits a partition back into its origin and viewer, ports included", () => {
+  const viewer = "a".repeat(64);
+  for (const origin of ["https://relay.example", "http://127.0.0.1:3000"])
+    expect(splitPartition(relayPartition(origin, viewer))).toEqual({
+      communityOrigin: origin,
+      viewer,
+    });
+  expect(splitPartition("no-separator")).toBeUndefined();
 });

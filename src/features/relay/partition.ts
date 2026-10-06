@@ -5,6 +5,17 @@ export function relayPartition(origin: string, viewer: string) {
   return `${origin}:${viewer}`;
 }
 
+/** The inverse of `relayPartition`. Origins may contain `:`; viewers never do. */
+export function splitPartition(partition: string) {
+  const at = partition.lastIndexOf(":");
+  return at < 0
+    ? undefined
+    : {
+        communityOrigin: partition.slice(0, at),
+        viewer: partition.slice(at + 1),
+      };
+}
+
 type PartitionedTransport = Readonly<{
   scope?: string | undefined;
   relayAuthor: string;

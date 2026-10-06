@@ -1,4 +1,4 @@
-import type { Reminder } from "../../features/relay/reminders";
+import type { Reminder, RemindersState } from "../../features/relay/reminders";
 
 export const nowSeconds = () => Math.floor(Date.now() / 1000);
 
@@ -21,11 +21,7 @@ export const dueSince = (
   now: number,
 ) =>
   reminders.filter(
-    (reminder) =>
-      reminder.status === "pending" &&
-      reminder.notBefore !== undefined &&
-      reminder.notBefore > watermark &&
-      reminder.notBefore <= now,
+    (reminder) => isDue(reminder, now) && (reminder.notBefore ?? 0) > watermark,
   );
 
 /** setTimeout fires at once past 2^31-1 ms, so long delays are re-checked. */
@@ -42,14 +38,22 @@ export function nextDelay(reminders: readonly Reminder[], now: number) {
     : Math.min((next - now) * 1000, MAX_DELAY_MS);
 }
 
-export const hasPendingReminder = (
-  reminders: readonly Reminder[],
-  messageId: string,
-) =>
-  reminders.some(
-    (reminder) =>
-      reminder.status === "pending" && reminder.target?.eventId === messageId,
-  );
+const pendingIds = new WeakMap<RemindersState, ReadonlySet<string>>();
+/** Message ids with a pending reminder, derived once per reminders snapshot. */
+export function pendingMessageIds(state: RemindersState) {
+  let ids = pendingIds.get(state);
+  if (!ids) {
+    ids = new Set(
+      state.reminders.flatMap((reminder) =>
+        reminder.status === "pending" && reminder.target
+          ? [reminder.target.eventId]
+          : [],
+      ),
+    );
+    pendingIds.set(state, ids);
+  }
+  return ids;
+}
 
 export type ReminderGroup = Readonly<{ label: string; reminders: Reminder[] }>;
 
@@ -123,6 +127,10 @@ export function parseCustomDateTime(date: string, time: string) {
   const at = Math.floor(new Date(`${date}T${time}`).getTime() / 1000);
   return Number.isNaN(at) || at <= nowSeconds() ? null : at;
 }
+
+/** True when the clock skipped the entered local time (a DST gap) and `at` moved. */
+export const shiftedFrom = (time: string, at: number) =>
+  new Date(at * 1000).toTimeString().slice(0, 5) !== time.slice(0, 5);
 
 export const formatDue = (at: number) =>
   new Date(at * 1000).toLocaleString([], {

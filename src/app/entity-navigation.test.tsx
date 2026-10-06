@@ -351,7 +351,10 @@ it("lists only active primary pages in the channel sidebar", async () => {
   ).toBeInTheDocument();
 });
 
-function legacyPageFixture() {
+function legacyPageFixture(
+  memberships = [{ id: origin, name: "Fixture community" }],
+  selected = origin,
+) {
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -365,8 +368,8 @@ function legacyPageFixture() {
     `buzz-client.v1:${viewer}`,
     JSON.stringify({
       profile: { name: "Fixture", picture: "" },
-      memberships: [{ id: origin, name: "Fixture community" }],
-      selected: origin,
+      memberships,
+      selected,
     }),
   );
   vi.stubGlobal(
@@ -451,6 +454,48 @@ it.each(["Inbox", "Bestie"])(
     }
   },
 );
+
+// Reminder notifications without an openable message send a page target scoped
+// to the reminder's community; it must win over the community selected at click.
+it("opens a community-scoped page from another community, but not after leaving it", async () => {
+  const other = "https://other.example";
+  const target = parseOpenTarget({
+    version: 1,
+    kind: "page",
+    pluginId: "fixture.notes",
+    pageId: "notes",
+    scope: { viewer, communityOrigin: origin },
+  });
+  const member = legacyPageFixture(
+    [
+      { id: origin, name: "Fixture community" },
+      { id: other, name: "Other community" },
+    ],
+    other,
+  );
+  await screen.findByRole("navigation", { name: "Pages" });
+  let result!: ReturnType<typeof member.navigation.open>;
+  act(() => {
+    result = member.navigation.open(target);
+  });
+  expect(await result).toEqual({ status: "opened" });
+  expect(member.communities.snapshot().selected).toBe(origin);
+  expect(member.navigation.snapshot().entry.target).toEqual(target);
+  cleanup();
+  await services?.dispose();
+  localStorage.clear();
+
+  const left = legacyPageFixture(
+    [{ id: other, name: "Other community" }],
+    other,
+  );
+  await screen.findByRole("navigation", { name: "Pages" });
+  act(() => {
+    result = left.navigation.open(target);
+  });
+  expect(await result).toEqual({ status: "failed", reason: "denied" });
+  expect(left.communities.snapshot().selected).toBe(other);
+});
 
 it("restores legacy placeholder history but does not normalize unknown versions or bypass access and plugin gates", async () => {
   const old: OpenTarget = {

@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { RelayData, RelaySnapshot } from "../../features/relay/service";
 import type { RemindersState } from "../../features/relay/reminders";
+import { splitPartition } from "../../features/relay/partition";
 
 export const noSubscribe = () => () => {};
 const idle: RemindersState = Object.freeze({
@@ -29,8 +30,6 @@ export function useReminders(relay: RelayData) {
 
 /** Navigation scope for a ready connection whose partition is `<origin>:<viewer>`. */
 export function scopeOf(connection: RelaySnapshot) {
-  const { viewer, scope } = connection;
-  return viewer && scope?.endsWith(`:${viewer}`)
-    ? { viewer, communityOrigin: scope.slice(0, -(viewer.length + 1)) }
-    : undefined;
+  const parts = connection.scope && splitPartition(connection.scope);
+  return parts && parts.viewer === connection.viewer ? parts : undefined;
 }

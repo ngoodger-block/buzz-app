@@ -6,12 +6,13 @@ import {
   countDue,
   dueSince,
   groupReminders,
-  hasPendingReminder,
   isDue,
   navigableTarget,
   nextDelay,
   nowSeconds,
   parseCustomDateTime,
+  pendingMessageIds,
+  shiftedFrom,
   todayDateString,
 } from "./model";
 
@@ -133,19 +134,18 @@ describe("reminder targets", () => {
     ).toBeUndefined();
   });
 
-  it("marks a message only while its reminder is pending", () => {
-    expect(hasPendingReminder([reminder({ target: target("m") })], "m")).toBe(
-      true,
-    );
-    expect(
-      hasPendingReminder(
-        [reminder({ target: target("m"), status: "done" })],
-        "m",
-      ),
-    ).toBe(false);
-    expect(hasPendingReminder([reminder({ target: target("x") })], "m")).toBe(
-      false,
-    );
+  it("marks a message only while its reminder is pending, once per snapshot", () => {
+    const state = {
+      status: "ready" as const,
+      hydrated: true,
+      reminders: [
+        reminder({ id: "a", target: target("m") }),
+        reminder({ id: "b", target: target("d"), status: "done" }),
+        reminder({ id: "c" }),
+      ],
+    };
+    expect([...pendingMessageIds(state)]).toEqual(["m"]);
+    expect(pendingMessageIds(state)).toBe(pendingMessageIds(state));
   });
 });
 
@@ -185,5 +185,20 @@ describe("time presets", () => {
     expect(parseCustomDateTime("not-a-date", "09:00")).toBeNull();
     expect(parseCustomDateTime("2099-01-01", "99:99")).toBeNull();
     expect(todayDateString()).toBe(day(0));
+  });
+
+  it("reports a custom time moved by the spring-forward gap", () => {
+    const zone = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      const skipped = parseCustomDateTime("2099-03-08", "02:30");
+      expect(skipped).not.toBeNull();
+      expect(shiftedFrom("02:30", skipped ?? 0)).toBe(true);
+      const ordinary = parseCustomDateTime("2099-03-08", "04:30");
+      expect(shiftedFrom("04:30", ordinary ?? 0)).toBe(false);
+    } finally {
+      if (zone === undefined) delete process.env.TZ;
+      else process.env.TZ = zone;
+    }
   });
 });

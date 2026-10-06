@@ -1,6 +1,7 @@
 import type { ChannelMessage } from "../relay/contracts";
 import { scanMarkdown, MAX_MARKDOWN_LENGTH } from "../relay/message-content";
 import { parseOpenTarget } from "../navigation/targets";
+import { splitPartition } from "../relay/partition";
 import { profileMentionParts } from "./profile-mentions";
 import { isLiteralMarkdownContext } from "./markdown-preparation";
 
@@ -57,7 +58,7 @@ export function messageCopyLink(
     const target = parseOpenTarget({
       version: 1,
       kind: "conversation",
-      scope: { communityOrigin: scope.slice(0, -65), viewer: scope.slice(-64) },
+      scope: splitPartition(scope),
       channelId: row.channelId,
       messageId: row.id,
       ...(row.threadRootId ? { threadRootId: row.threadRootId } : {}),

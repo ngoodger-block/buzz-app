@@ -19,8 +19,10 @@
   padding: 0;
 }
 
+/* Actions wrap below the text before the text gets too narrow to read. */
 .row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-2) var(--space-3);
@@ -29,8 +31,13 @@
 }
 
 .text {
-  flex: 1;
+  flex: 1 1 16rem;
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  flex-wrap: wrap;
 }
 
 .actions,

@@ -81,6 +81,7 @@ import {
   useChannelNavigation,
 } from "./ChannelNavigationState";
 import { newSessionParent } from "./routes";
+import { splitPartition } from "../relay/partition";
 import { ChannelSidebarResizeHandle } from "./ChannelSidebarResizeHandle";
 import styles from "../../bundled/channels/Channels.module.css";
 
@@ -419,17 +420,15 @@ function ReadySidebar({
   }, [lifecycleDialog, sidebar.list]);
   const select = useCallback(
     (id: string) => {
-      if (!viewer || relay.snapshot().session !== queries) return;
+      const parts = splitPartition(scope);
+      if (!viewer || !parts || relay.snapshot().session !== queries) return;
       clientMetrics.channelIntent(id, window.event);
       writeView(scope, "selected-channel", id);
       void navigator.open({
         version: 1,
         kind: "conversation",
         channelId: id,
-        scope: {
-          viewer,
-          communityOrigin: scope.slice(0, -(viewer.length + 1)),
-        },
+        scope: { viewer, communityOrigin: parts.communityOrigin },
       });
     },
     [navigator, relay, queries, scope, viewer],

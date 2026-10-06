@@ -7,10 +7,10 @@ import { AlarmIcon } from "../../shared/design-system/icons/index";
 import {
   countDue,
   dueSince,
-  hasPendingReminder,
   navigableTarget,
   nextDelay,
   nowSeconds,
+  pendingMessageIds,
 } from "./model";
 import { RemindDialog } from "./RemindDialog";
 import { RemindersPage } from "./RemindersPage";
@@ -67,10 +67,11 @@ export const apply: PluginModule["apply"] = (ctx) => {
       if (!hydrated) return;
       const scope = scopeOf(connection);
       const watermark = watermarks.get(boundScope) ?? now;
-      for (const reminder of dueSince(reminders, watermark, now)) {
-        const message = navigableTarget(reminder);
-        const target: OpenTarget =
-          message && scope
+      // Every reminder notification opens in the community it came from.
+      if (scope)
+        for (const reminder of dueSince(reminders, watermark, now)) {
+          const message = navigableTarget(reminder);
+          const target: OpenTarget = message
             ? {
                 version: 1,
                 kind: "conversation",
@@ -78,11 +79,14 @@ export const apply: PluginModule["apply"] = (ctx) => {
                 channelId: message.channelId,
                 messageId: message.eventId,
               }
-            : { version: 1, kind: "page", ...page };
-        void notify
-          .submit({ sourceKey: `${reminder.id}:${reminder.notBefore}`, target })
-          .catch(() => {});
-      }
+            : { version: 1, kind: "page", ...page, scope };
+          void notify
+            .submit({
+              sourceKey: `${reminder.id}:${reminder.notBefore}`,
+              target,
+            })
+            .catch(() => {});
+        }
       watermarks.set(boundScope, now);
       // After sleep the timer fires late; the watermark still covers the gap.
       const delay = nextDelay(reminders, now);
@@ -102,8 +106,8 @@ export const apply: PluginModule["apply"] = (ctx) => {
           watermarks.set(boundScope, nowSeconds());
         unbind = next?.subscribe(check);
         void next?.refresh();
+        check();
       }
-      check();
     };
     const stop = relay.subscribe(bind);
     bind();
@@ -153,7 +157,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
       reminders?.snapshot ?? noState,
       reminders?.snapshot ?? noState,
     );
-    return hasPendingReminder(state.reminders, message.id) ? (
+    return pendingMessageIds(state).has(message.id) ? (
       <span
         className={styles.marker}
         role="img"

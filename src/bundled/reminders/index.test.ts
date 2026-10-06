@@ -189,3 +189,32 @@ it("keeps the bind-time window when a live arrival follows a failed first read",
     expect.objectContaining({ sourceKey: "overdue:103" }),
   );
 });
+
+it("opens a note-only reminder's notification on its own community's page", async () => {
+  const origin = "https://a.example";
+  const note = {
+    ...wire("note", 110),
+    content: JSON.stringify({ note: "call back", status: "pending" }),
+  } as RelayEvent;
+  const { submit, connect } = mount();
+  const model = session(Promise.resolve([note]));
+  connect(`${origin}:${viewer}`, model.capability);
+  await flush();
+  at(120);
+  await vi.advanceTimersByTimeAsync(10_000);
+  connect(
+    `https://b.example:${viewer}`,
+    session(Promise.resolve([])).capability,
+  );
+  await flush();
+  expect(submit).toHaveBeenCalledExactlyOnceWith({
+    sourceKey: "note:110",
+    target: {
+      version: 1,
+      kind: "page",
+      pluginId: "buzz.reminders",
+      pageId: "reminders",
+      scope: { viewer, communityOrigin: origin },
+    },
+  });
+});

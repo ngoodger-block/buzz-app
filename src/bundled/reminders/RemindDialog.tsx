@@ -6,7 +6,13 @@ import { Button } from "../../shared/design-system/ui/Button";
 import { Dialog } from "../../shared/design-system/ui/Dialog";
 import { Input } from "../../shared/design-system/ui/Input";
 import { Textarea } from "../../shared/design-system/ui/Textarea";
-import { TIME_PRESETS, parseCustomDateTime, todayDateString } from "./model";
+import {
+  TIME_PRESETS,
+  formatDue,
+  parseCustomDateTime,
+  shiftedFrom,
+  todayDateString,
+} from "./model";
 import styles from "./Reminders.module.css";
 
 /** "Remind me" for one message: a preset or custom time, plus an optional note. */
@@ -94,6 +100,12 @@ export function RemindDialog({
             onChange={(event) => setTime(event.target.value)}
           />
         </div>
+        {custom !== null && shiftedFrom(time, custom) && (
+          <p role="status" className="text-body text-subtle">
+            That time is skipped by daylight saving. The reminder will be set
+            for {formatDue(custom)}.
+          </p>
+        )}
         <Textarea
           aria-label="Note"
           placeholder="Add a note (optional)"

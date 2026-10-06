@@ -84,6 +84,12 @@ contribution when its Cordis scope ends. `primary: true` gives a page a row in t
 shell's page navigation. Pages without it are still listed in search and reachable
 by deep link or from another page; Channels and Sessions are bundled examples.
 
+A primary page may also supply `badge`, a component the shell renders at the end
+of its navigation row, such as a count of due items. The plugin owns its data and
+re-rendering; the shell owns the row and placement. A badge that throws renders
+nothing and leaves the row usable. Pages without `primary` have no row, so their
+badge is not shown.
+
 A page may supply `icon`, a `data:image/<subtype>[;params],<payload>` URL; the
 scheme and type match case-insensitively. Search Buzz and the page navigation
 render it as a decorative image, with the generic icon when it is absent or fails
@@ -631,6 +637,18 @@ host body. Registration uses the same owned contribution lifetime as inline/link
 renderers. The host retains author/time chrome, actions, attachments and session
 ownership. `MessageRenderer` is a host-matched author-preview type, not event
 admission or cross-version capability negotiation.
+
+`registerMessageAction({ id, title, icon?, matches, component, marker? })` adds an
+entry to a message's ⋯ menu. `matches(message, session)` decides per row whether
+the entry appears; throwing matchers are skipped. `icon` renders beside the title.
+Choosing the entry mounts `component` with `{ message, session, close }` inside the
+row, typically a dialog; it stays mounted until it calls `close()`. The optional
+`marker` receives `{ message, session }` and renders beside the timestamp, such as a
+state mark. It renders only while `matches` passes, so hiding the menu entry also
+hides its mark. The host owns the menu, focus restoration and row lifetime: a row
+with an open action stays mounted while it scrolls out of view. Icon, component
+and marker failures each render nothing and leave the row and menu usable. The
+bundled Reminders plugin is the first consumer.
 
 The bundled **Diff viewer** (`buzz.diffs`) handles `ChannelMessage.diff` from legacy
 kind 40008. Shared history, live, thread and exact readers retain these messages

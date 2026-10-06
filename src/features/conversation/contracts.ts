@@ -110,7 +110,10 @@ export type MessageAction = Readonly<{
     session: RelaySession;
     close(): void;
   }>;
-  /** Optional presentation beside the message timestamp, such as a state mark. */
+  /**
+   * Optional presentation beside the message timestamp, such as a state mark.
+   * Rendered only while `matches` passes: hiding the menu entry hides the mark.
+   */
   marker?: ComponentType<{ message: ChannelMessage; session: RelaySession }>;
 }>;
 export type ConversationExtensions = Readonly<{

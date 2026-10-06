@@ -113,13 +113,14 @@ fn decrypt(secret: &[u8; 32], viewer: &str, raw: &Value) -> Option<Value> {
         return None;
     }
     let content: Value = serde_json::from_str(&plaintext).ok()?;
-    content
-        .is_object()
-        .then(|| json!({ "eventId": event.id.to_hex(), "content": content }))
+    // Read and write share one rule: show only reminders this client could save again.
+    let status = content.get("status").and_then(Value::as_str)?;
+    validate_content(&content, status).ok()?;
+    Some(json!({ "eventId": event.id.to_hex(), "content": content }))
 }
 
 /// Decrypt verified, self-authored reminders. Other clients may write records this
-/// client cannot read, so invalid entries are skipped, not fatal to the list.
+/// client cannot read or save, so invalid entries are skipped, not fatal to the list.
 #[tauri::command]
 pub(crate) async fn relay_decode_reminders(
     host: tauri::State<'_, IdentityHost>,
@@ -232,8 +233,10 @@ pub(super) async fn admit_reminder(host: &IdentityHost, event: &Value) -> Result
         .with_key(move |secret, viewer| Ok(decrypt(secret, viewer, &raw)))
         .await?
         .ok_or_else(invalid)?;
-    let status = status_matches(tag, &decoded["content"]).ok_or_else(invalid)?;
-    validate_content(&decoded["content"], status)
+    // `decrypt` already ran `validate_content`; the tag must select the content's status.
+    status_matches(tag, &decoded["content"])
+        .map(|_| ())
+        .ok_or_else(invalid)
 }
 
 #[cfg(test)]
@@ -354,6 +357,66 @@ mod tests {
             .await
             .unwrap();
         assert!(skipped.is_none());
+    }
+
+    /// Encrypt and sign arbitrary content, as beta or mobile may have written it.
+    async fn seal(host: &IdentityHost, content: Value) -> Value {
+        let plaintext = content.to_string();
+        let sealed = host
+            .with_key(move |secret, _| {
+                let secret = SecretKey::from_slice(secret).unwrap();
+                let public = Keys::new(secret.clone()).public_key();
+                Ok(nip44::encrypt(&secret, &public, &plaintext, nip44::Version::V2).unwrap())
+            })
+            .await
+            .unwrap();
+        host.sign(EventTemplate {
+            kind: KIND,
+            created_at: 1_000_000,
+            content: sealed,
+            tags: vec![
+                vec!["d".into(), "0123456789abcdef0123456789abcdef".into()],
+                vec!["not_before".into(), "1000060".into()],
+            ],
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn decode_skips_reminders_this_client_could_not_save() {
+        let host = IdentityHost::fixture();
+        let decode =
+            |event: Value| host.with_key(move |secret, viewer| Ok(decrypt(secret, viewer, &event)));
+        let normal = seal(&host, json!({"target": target(), "status": "pending"})).await;
+        assert!(decode(normal).await.unwrap().is_some());
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}".repeat(100);
+        let mut emoji = target();
+        emoji["preview"] = json!(family);
+        let mut empty = target();
+        empty["channelId"] = json!("");
+        empty["authorPubkey"] = json!("");
+        for (name, content) in [
+            (
+                "4,097-char note",
+                json!({"target": target(), "note": "n".repeat(4097), "status": "pending"}),
+            ),
+            (
+                "100 family emoji preview",
+                json!({"target": emoji, "status": "pending"}),
+            ),
+            (
+                "empty channel and author",
+                json!({"target": empty, "status": "pending"}),
+            ),
+            (
+                "17,000-char note",
+                json!({"note": "n".repeat(17_000), "status": "pending"}),
+            ),
+        ] {
+            let event = seal(&host, content).await;
+            assert!(decode(event).await.unwrap().is_none(), "{name}");
+        }
     }
 
     #[tokio::test]

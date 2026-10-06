@@ -262,14 +262,14 @@ export const MessageRow = memo(function MessageRow({
     : [];
   const [openAction, setOpenAction] = useState<string>();
   const opened = actions.find((action) => action.key === openAction);
-  const reportActive = reporting !== undefined || !!opened;
+  const keepAlive = reporting !== undefined || !!opened;
   // The dialog, pending submit and notice live in this row; eviction loses them.
   useEffect(() => {
-    const release = reportActive ? keepMounted?.(row.id) : undefined;
+    const release = keepAlive ? keepMounted?.(row.id) : undefined;
     // Dialog focus restoration runs in a microtask after unmount; releasing a
     // task later lets restored focus keep the row mounted instead.
     return release && (() => void setTimeout(release));
-  }, [reportActive, keepMounted, row.id]);
+  }, [keepAlive, keepMounted, row.id]);
   const keepRowMounted = useMemo(
     () => keepMounted && (() => keepMounted(row.id)),
     [keepMounted, row.id],

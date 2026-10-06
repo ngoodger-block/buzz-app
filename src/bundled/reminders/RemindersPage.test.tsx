@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
+import type { ReactNode } from "react";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -8,10 +10,16 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import type { Reminder, Reminders } from "../../features/relay/reminders";
+import type { RelayEvent } from "../../features/relay/events";
+import {
+  createReminders,
+  type Reminder,
+  type Reminders,
+} from "../../features/relay/reminders";
 import type { RelayData } from "../../features/relay/service";
 import type { Navigation } from "../../features/navigation/controller";
 import { RemindersPage } from "./RemindersPage";
+import { apply } from "./index";
 
 afterEach(cleanup);
 
@@ -91,4 +99,80 @@ it("lists finished reminders newest first in a Done group with only Open", () =>
   expect(open).toHaveBeenCalledWith(
     expect.objectContaining({ messageId: "newer done-message" }),
   );
+});
+
+it("recovers a failed first history read through Retry, then notifies", async () => {
+  vi.useFakeTimers({ now: now * 1000 });
+  try {
+    const live = {
+      id: "live",
+      pubkey: viewer,
+      kind: 30300,
+      created_at: now,
+      tags: [
+        ["d", "live"],
+        ["not_before", String(now + 3)],
+      ],
+      content: JSON.stringify({ note: "stand-up", status: "pending" }),
+      sig: "",
+    } as unknown as RelayEvent;
+    const query = vi
+      .fn<() => Promise<RelayEvent[]>>()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue([]);
+    const model = createReminders({
+      viewer,
+      signal: new AbortController().signal,
+      host: {
+        decode: async (events) =>
+          events.map((e) => ({
+            eventId: e.id,
+            content: JSON.parse(e.content),
+          })),
+        sign: vi.fn(),
+      },
+      query,
+      publish: async () => {},
+    });
+    const connection = {
+      status: "ready",
+      scope: `https://community.example:${viewer}`,
+      viewer,
+      session: { reminders: model.capability },
+    };
+    const submit = vi.fn(() => Promise.resolve());
+    let Page: () => ReactNode = () => null;
+    apply({
+      relay: { snapshot: () => connection, subscribe: () => () => {} },
+      notifications: { register: () => ({ submit }) },
+      pages: {
+        register: (page: { component: () => ReactNode }) => {
+          Page = page.component;
+        },
+      },
+      navigation: {},
+      conversation: { registerMessageAction: vi.fn() },
+      effect: (body: () => void) => body(),
+    } as unknown as Parameters<typeof apply>[0]);
+    render(<Page />);
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    const retry = screen.getByRole("button", { name: "Retry reminders" });
+    act(() => model.receive([live]));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    // The live arrival fills the list, but history is still incomplete.
+    expect(screen.getByText("stand-up")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Some reminders could not be loaded.",
+    );
+    fireEvent.click(retry);
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    expect(submit).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ sourceKey: `live:${now + 3}` }),
+    );
+  } finally {
+    vi.useRealTimers();
+  }
 });
