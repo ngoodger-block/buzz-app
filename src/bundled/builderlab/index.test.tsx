@@ -4,6 +4,7 @@ import { Context } from "@deepseek-ai/cordis";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { KnownCommunities } from "../../features/communities/service";
 import { HostService } from "../../features/host/service";
 import { SettingsCardsService } from "../../features/settings/service";
 import * as builderlab from "./index";
@@ -13,6 +14,28 @@ import manifest from "./manifest.json";
 
 const native = vi.hoisted(() => ({ isTauri: () => true, invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => native);
+/** The device's identity, which the account must be bound to before its
+ * community list follows the sign-in. */
+const viewer = "cd".repeat(32);
+function provideKnownCommunities(root: Context) {
+  const knownCommunities: KnownCommunities = {
+    snapshot: () => ({
+      status: "ready",
+      relayAvailable: true,
+      profile: { name: "", picture: "" },
+      sync: { known: {}, outbox: [] },
+      viewer,
+      selected: null,
+      memberships: [],
+    }),
+    subscribe: () => () => {},
+    pending: () => [],
+    apply: vi.fn(async () => {}),
+    status: vi.fn(),
+  };
+  root.provide("knownCommunities", knownCommunities);
+  return knownCommunities;
+}
 beforeEach(() => {
   vi.stubEnv("VITE_BUZZ_BUILDERLAB_URL", "https://builderlab.example");
   vi.stubGlobal("navigator", { platform: "MacIntel" });
@@ -30,6 +53,7 @@ it("an unconfigured desktop build shows setup guidance and cannot start login", 
   const root = new Context();
   const runtime = new PluginRuntime(root, async () => builderlab);
   new HostService(root);
+  provideKnownCommunities(root);
   const cards = new SettingsCardsService(root);
   try {
     runtime.reconcile([
@@ -58,7 +82,7 @@ it("an unconfigured desktop build shows setup guidance and cannot start login", 
   }
 });
 
-it("binds login, list and creation to the plugin host and clears the session on disable/re-enable", async () => {
+it("binds login, list, creation and community sync to the plugin host and clears the session on disable/re-enable", async () => {
   native.invoke.mockImplementation(async (command, input) => {
     if (command === "oauth_callback_begin")
       return {
@@ -84,10 +108,14 @@ it("binds login, list and creation to the plugin host and clears the session on 
                 ? { status: 1, agent_id: "one", agent_pubkey: "ab".repeat(32) }
                 : input.request.url.endsWith("/attest-agent")
                   ? { status: 1 }
-                  : {
-                      subject: "user",
-                      email: "a@example.com",
-                    },
+                  : input.request.url.endsWith("/nostr-identities/current")
+                    ? { identity: { pubkey_hex: viewer } }
+                    : input.request.url.endsWith("/known-communities/list")
+                      ? { communities: [] }
+                      : {
+                          subject: "user",
+                          email: "a@example.com",
+                        },
         ),
       };
     throw new Error(`Unexpected command ${command}`);
@@ -95,6 +123,7 @@ it("binds login, list and creation to the plugin host and clears the session on 
   const root = new Context();
   const runtime = new PluginRuntime(root, async () => builderlab);
   new HostService(root);
+  const knownCommunities = provideKnownCommunities(root);
   const cards = new SettingsCardsService(root);
   const plugin: PluginInfo = {
     manifest: { ...manifest, apiVersion: 1 },
@@ -129,10 +158,22 @@ it("binds login, list and creation to the plugin host and clears the session on 
     expect(native.invoke).toHaveBeenCalledWith("oauth_callback_wait", {
       id: "native-attempt-id",
     });
+    // The signed-in account's community list follows through the same wiring:
+    // the binding is checked, then the complete list is read.
+    await waitFor(() =>
+      expect(knownCommunities.status).toHaveBeenLastCalledWith({
+        phase: "synced",
+        pending: 0,
+      }),
+    );
     const requests = native.invoke.mock.calls
       .filter(([command]) => command === "plugin_host_request")
       .map(([, input]) => input);
-    expect(requests).toHaveLength(3);
+    const [account, sync] = [
+      requests.filter((input) => !input.request.url.includes("/v1/buzz/")),
+      requests.filter((input) => input.request.url.includes("/v1/buzz/")),
+    ];
+    expect(account).toHaveLength(3);
     expect(
       requests.every(
         (input) =>
@@ -140,9 +181,20 @@ it("binds login, list and creation to the plugin host and clears the session on 
       ),
     ).toBe(true);
     // Prove the account login supplies this consumer's credential through the real plugin wiring.
-    expect(requests.at(-1).request.headers["X-BB-Session-Credential"]).toBe(
+    expect(account.at(-1).request.headers["X-BB-Session-Credential"]).toBe(
       "private-token",
     );
+    expect(sync.map((input) => input.request.url)).toEqual([
+      "https://builderlab.example/api/goose/v1/buzz/nostr-identities/current",
+      "https://builderlab.example/api/goose/v1/buzz/known-communities/list",
+    ]);
+    expect(
+      sync.every(
+        (input) =>
+          input.request.headers["X-BB-Session-Credential"] === "private-token",
+      ),
+    ).toBe(true);
+    expect(sync[1].request.body).toBe(JSON.stringify({ pubkey_hex: viewer }));
     const user = userEvent.setup();
     await user.type(
       screen.getByRole("textbox", { name: "Agent name" }),
@@ -175,6 +227,8 @@ it("binds login, list and creation to the plugin host and clears the session on 
     expect(
       screen.getByRole("button", { name: "Sign in with Builderlab" }),
     ).toBeEnabled();
+    // The disabled plugin's sync owner withdraws its report with it.
+    expect(knownCommunities.status).toHaveBeenLastCalledWith(undefined);
     mounted.unmount();
     runtime.reconcile([plugin]);
     await waitFor(() => expect(cards.snapshot()).toHaveLength(1));

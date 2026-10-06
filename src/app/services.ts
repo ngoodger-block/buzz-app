@@ -78,6 +78,7 @@ export function createServices() {
     subscribe: communities.subscribe,
     pending: communities.pendingSync,
     apply: communities.applySync,
+    status: communities.setSyncStatus,
   });
   const relay = communities.relay;
   ctx.effect(() => bindAgentMentions(agentControl, communities));

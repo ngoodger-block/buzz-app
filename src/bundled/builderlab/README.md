@@ -18,6 +18,12 @@ The bundled `block.builderlab` plugin adds Settings → Integrations → Builder
   uncertain failure within the server's seven-day replay window. Credentials
   and owner proofs are never stored. Creation does not add channel membership
   or make the agent selectable in Buzz conversations.
+- `known-communities/` keeps the account's community list in step with this
+  device through the `knownCommunities` capability while signed in: it checks
+  that the account is bound to this device's key (never binding it), merges the
+  service's complete list, uploads queued joins and leaves one at a time with
+  retries under the same operation ID, and reports its state for the rail's
+  not-synced indicator. See [communities](../../../docs/communities.md#known-communities).
 
 The plugin uses the `BUZZ_BUILDERLAB_URL` [build input](../../../docs/configuration.md#builderlab-url-build-input)
 as its server address and appends `/api/goose`.
