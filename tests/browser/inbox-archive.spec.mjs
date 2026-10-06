@@ -34,6 +34,13 @@ test("Inbox archive scope is separate from attention filters and preserves them"
 
   await expect(inboxButton).toHaveAttribute("aria-pressed", "true");
   await expect(archivedButton).toHaveAttribute("aria-pressed", "false");
+  const selectedScopeBackground = await inboxButton.evaluate(
+    (button) => getComputedStyle(button).backgroundColor,
+  );
+  const unselectedScopeBackground = await archivedButton.evaluate(
+    (button) => getComputedStyle(button).backgroundColor,
+  );
+  expect(selectedScopeBackground).not.toBe(unselectedScopeBackground);
   await inbox.getByRole("button", { name: "About Inbox archive" }).hover();
   await expect(page.getByRole("tooltip")).toHaveText(
     "Archive choices are saved on this device for this account and community. They don’t sync to your other devices.",
@@ -53,12 +60,18 @@ test("Inbox archive scope is separate from attention filters and preserves them"
   await archivedButton.click();
   await expect(rows).toHaveCount(1);
   await expect(archivedButton).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    archivedButton.evaluate(
+      (button) => getComputedStyle(button).backgroundColor,
+    ),
+  ).not.toBe(selectedScopeBackground);
   await expect(inbox.getByRole("combobox", { name: "Sender" })).toContainText(
     "Agents",
   );
   await expect(
     inbox.getByRole("checkbox", { name: "Unread only" }),
   ).toBeChecked();
+  await page.mouse.move(800, 300);
   await page.screenshot({
     path: testInfo.outputPath("inbox-archived-scope.png"),
     fullPage: true,
