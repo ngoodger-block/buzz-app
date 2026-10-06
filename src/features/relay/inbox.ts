@@ -15,6 +15,8 @@ export type InboxItem = Readonly<{
   preview: string;
   createdAt: number;
   mentioned: boolean;
+  /** Explicit verified mentions, excluding self, for Inbox archive renewal. */
+  mentions: readonly Readonly<{ id: string; createdAt: number }>[];
   thread: boolean;
   unreadCount: number;
   manual: boolean;

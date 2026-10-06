@@ -41,6 +41,15 @@ import {
 } from "../../shared/design-system/ui/Menu";
 import styles from "./Inbox.module.css";
 import { dmLabel } from "./dm-label";
+import { subscribeView, viewRevision } from "../../shared/view-state";
+import {
+  archiveKey,
+  archiveIndex,
+  isArchived,
+  readArchives,
+  reopenArchives,
+  updateArchive,
+} from "./archive";
 
 type ActivityFilter = "all" | "dms" | "threads" | "mentions";
 type SenderFilter = "everyone" | "humans" | "agents";
@@ -165,6 +174,19 @@ export function InboxView({
   const [senderFilter, setSenderFilter] = useState<SenderFilter>("everyone");
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [drafts, setDrafts] = useState(false);
+  const [archivedView, setArchivedView] = useState(false);
+  const archiveScope = session.scope;
+  const subscribeArchives = useCallback(
+    (listener: () => void) => subscribeView(archiveScope, listener),
+    [archiveScope],
+  );
+  const archiveRevision = useSyncExternalStore(subscribeArchives, () =>
+    viewRevision(archiveScope, archiveKey),
+  );
+  const archives = useMemo(
+    () => archiveIndex(readArchives(archiveRevision)),
+    [archiveRevision],
+  );
   const draftsControl = useRef<HTMLButtonElement>(null);
   const [selectedTarget, setSelectedTarget] = useState<{
     channelId: string;
@@ -219,7 +241,20 @@ export function InboxView({
     }
   }, [session, list.status, list.asOf, refreshAfterRoster]);
   const items = inbox.items;
-  const activityItems = items.filter((item) =>
+  const archived = (item: InboxItem) => isArchived(archives, item);
+  const viewItems = items.filter((item) => archived(item) === archivedView);
+  useEffect(() => {
+    try {
+      reopenArchives(archiveScope, inbox.items, archiveRevision);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not save the reopened conversation.",
+      );
+    }
+  }, [archiveScope, archiveRevision, inbox.items]);
+  const activityItems = viewItems.filter((item) =>
     matchesActivity(
       item,
       activity,
@@ -231,7 +266,7 @@ export function InboxView({
   );
   // A late verified root can legitimately regroup channel:reply into
   // channel:root. Keep the captured visit by exact key, never by a namesake.
-  const selected = items.find(
+  const selected = viewItems.find(
     (item) =>
       item.channelId === selectedTarget?.channelId &&
       item.messageIds.includes(selectedTarget.messageId),
@@ -372,6 +407,7 @@ export function InboxView({
   }
   function refresh(retrySync = false) {
     void run(async () => {
+      reopenArchives(archiveScope, session.unread.inbox().items);
       if (list.status !== "ready") {
         setRefreshAfterRoster(true);
         session.channels.ensureList();
@@ -383,6 +419,28 @@ export function InboxView({
       }
       if (retrySync && active.current) await session.unread.retrySync();
     });
+  }
+  function archive(item: InboxItem, value: boolean) {
+    cancelRetry();
+    const valid = () => {
+      const channel = session.channels
+        .list()
+        .channels.find((entry) => entry.id === item.channelId);
+      return (
+        active.current &&
+        !!channel &&
+        !channel.cached &&
+        !channel.archived &&
+        !!channel.members?.includes(scope.viewer) &&
+        session.unread.inbox().items.includes(item)
+      );
+    };
+    void run(async () => {
+      updateArchive(archiveScope, item, value);
+      setMenu(undefined);
+      setRestoringFocus(true);
+      setSelectedTarget(undefined);
+    }, valid);
   }
   function mutate(item: InboxItem, unread: boolean) {
     // An open menu is not authority: recheck the current session at action entry.
@@ -492,19 +550,35 @@ export function InboxView({
           <PanelHeaderLabel title="Inbox" icon={<BellIcon size="1rem" />} />
         }
         actions={
-          <Button
-            size="sm"
-            variant="ghost"
-            ref={draftsControl}
-            onClick={() => {
-              cancelRetry();
-              setDrafts((current) => !current);
-            }}
-          >
-            <span className="text-body">
-              {drafts ? "Back to Inbox" : "Drafts"}
-            </span>
-          </Button>
+          <>
+            {!drafts && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  cancelRetry();
+                  setSelectedTarget(undefined);
+                  setArchivedView((current) => !current);
+                  setLimit(50);
+                }}
+              >
+                {archivedView ? "Back to Inbox" : "Archived"}
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              ref={draftsControl}
+              onClick={() => {
+                cancelRetry();
+                setDrafts((current) => !current);
+              }}
+            >
+              <span className="text-body">
+                {drafts ? "Back to Inbox" : "Drafts"}
+              </span>
+            </Button>
+          </>
         }
       />
       {!drafts && failure && (
@@ -606,13 +680,16 @@ export function InboxView({
                 !failure && (
                   <div className={styles.empty} role="status">
                     <h3 className="text-label">
-                      {unreadOnly
-                        ? "No unread activity in this view"
-                        : "No recent activity in this view"}
+                      {archivedView
+                        ? "No archived conversations in this view"
+                        : unreadOnly
+                          ? "No unread activity in this view"
+                          : "No recent activity in this view"}
                     </h3>
                     <p className="text-body text-subtle">
-                      Mentions, direct messages, and replies in threads you
-                      participate in appear here.
+                      {archivedView
+                        ? "Archived conversations stay here until you restore them or receive a new mention."
+                        : "Mentions, direct messages, and replies in threads you participate in appear here."}
                     </p>
                   </div>
                 )}
@@ -776,6 +853,14 @@ export function InboxView({
                           }
                         >
                           <MenuItem
+                            disabled={pending}
+                            onClick={() => archive(item, !archivedView)}
+                          >
+                            {archivedView
+                              ? "Restore conversation"
+                              : "Archive conversation"}
+                          </MenuItem>
+                          <MenuItem
                             disabled={pending || unread || !canRead}
                             onClick={() => mutate(item, true)}
                           >
@@ -817,6 +902,11 @@ export function InboxView({
                     : "loading"
                   : undefined
               }
+              archiveAction={{
+                archived: archivedView,
+                disabled: pending,
+                run: () => archive(selected, !archivedView),
+              }}
               onBack={() => {
                 setRestoringFocus(true);
                 cancelRetry();

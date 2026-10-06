@@ -14,6 +14,12 @@ outbox retain their existing ownership. No projects, approvals or reminders.
 
 ## Conversation UI (PR4; Drafts in PR5)
 
+### Archive conversations
+
+Archive in the conversation header or row context menu removes that conversation from the active Inbox. Archived opens the archived view, where Restore returns a conversation to Inbox. Replies alone keep it archived. A new verified message explicitly mentioning the viewer reopens it, including a new mention in the same second as archiving. Historical mentions and replayed observed messages do not reopen it. Reopening retires the saved archive so later evidence eviction cannot hide the conversation again.
+
+Archive is personal view intent saved on this device, partitioned by the relay session's community and viewer scope. It persists across reloads and reconnects, with the same-window subscription and cross-window storage notifications as other view intent. Failed saves leave the conversation visible and expose Retry. This first version neither synchronizes archive choices across devices nor changes unread or notification policy. It does not delete messages or claim a task has finished. The archived view uses the same bounded verified conversation evidence as Inbox, so it is not a permanent full-history archive browser.
+
 Inbox now renders chat-only DMs, mentions and participating threads through
 `session.unread.inbox()`, with independent Activity type and Sender filters and
 an Unread only toggle. Sender classification uses `session.agentChoices` and

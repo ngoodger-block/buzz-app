@@ -881,6 +881,16 @@ export function createUnread({
                 representative.event.content,
               createdAt: latest.event.created_at,
               mentioned: entries.some((entry) => entry.mentioned),
+              mentions: Object.freeze(
+                entries
+                  .filter((entry) => entry.mentioned)
+                  .map(({ event }) =>
+                    Object.freeze({
+                      id: event.id,
+                      createdAt: event.created_at,
+                    }),
+                  ),
+              ),
               thread: entries.some((entry) => entry.parentId !== undefined),
               unreadCount: unread.length,
               manual:

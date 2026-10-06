@@ -49,8 +49,118 @@ vi.stubGlobal(
 HTMLElement.prototype.scrollIntoView = vi.fn();
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   for (const owner of owners.splice(0)) owner.dispose();
   vi.useRealTimers();
+});
+
+it("archives a conversation durably, restores it, and reopens only for a new mention", async () => {
+  const h = fixture();
+  const view = render(h.view);
+  const rows = () =>
+    within(screen.getByRole("list", { name: "Inbox conversations" }));
+  await waitFor(() => expect(rows().getAllByRole("button")).toHaveLength(2));
+  const row = rows()
+    .getAllByRole("button")
+    .find((button) => button.textContent?.includes("A thread update"));
+  if (!row) throw new Error("Missing fixture thread row");
+  fireEvent.click(row);
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Archive conversation" }),
+    ).toBeEnabled(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Archive conversation" }));
+  await waitFor(() => expect(rows().getAllByRole("button")).toHaveLength(1));
+  expect(
+    screen.queryByRole("region", { name: "Inbox detail" }),
+  ).not.toBeInTheDocument();
+  view.unmount();
+  render(h.view);
+  await waitFor(() => expect(rows().getAllByRole("button")).toHaveLength(1));
+  fireEvent.click(screen.getByRole("button", { name: "Archived" }));
+  await waitFor(() => expect(rows().getAllByRole("button")).toHaveLength(1));
+  fireEvent.click(rows().getByRole("button"));
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Restore conversation" }),
+    ).toBeEnabled(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Restore conversation" }));
+  await waitFor(() => expect(rows().queryAllByRole("button")).toHaveLength(0));
+  fireEvent.click(screen.getByRole("button", { name: "Back to Inbox" }));
+  await waitFor(() => expect(rows().getAllByRole("button")).toHaveLength(2));
+  const restoredRow = rows()
+    .getAllByRole("button")
+    .find((button) => button.textContent?.includes("A thread update"));
+  if (!restoredRow) throw new Error("Missing restored thread row");
+  fireEvent.click(restoredRow);
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Archive conversation" }),
+    ).toBeEnabled(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Archive conversation" }));
+  await waitFor(() => expect(rows().getAllByRole("button")).toHaveLength(1));
+  const post = (content: string, at: number, mentioned = false) => {
+    if (!h.root) throw new Error("Missing fixture thread root");
+    const event = message(h.alice, "room", content, at, [
+      ["e", h.root.id, "", "reply"],
+      ...(mentioned ? [["p", h.viewer.pubkey]] : []),
+    ]);
+    h.addEvent(event);
+    act(() => h.emit([event]));
+  };
+  const now = Math.floor(Date.now() / 1000);
+  post("Agent progress", now + 1);
+  await waitFor(() =>
+    expect(
+      h.owner.session.unread
+        .inbox()
+        .items.some(
+          (item) => item.latestMessageId !== h.reply.id && item.thread,
+        ),
+    ).toBe(true),
+  );
+  expect(rows().getAllByRole("button")).toHaveLength(1);
+  post("John, please decide", now + 2, true);
+  await waitFor(() => expect(rows().getAllByRole("button")).toHaveLength(2));
+});
+
+it("keeps the conversation visible and reports a failed archive save", async () => {
+  const h = fixture();
+  render(h.view);
+  const list = screen.getByRole("list", { name: "Inbox conversations" });
+  await waitFor(() =>
+    expect(within(list).getAllByRole("button")).toHaveLength(2),
+  );
+  const row = within(list).getAllByRole("button")[0];
+  if (!row) throw new Error("Missing fixture row");
+  fireEvent.click(row);
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Archive conversation" }),
+    ).toBeEnabled(),
+  );
+  const save = Storage.prototype.setItem;
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+    this: Storage,
+    key,
+    value,
+  ) {
+    if (key.includes("inbox:archives")) throw new Error("disk full");
+    save.call(this, key, value);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Archive conversation" }));
+  await waitFor(() =>
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Could not save the Inbox archive",
+    ),
+  );
+  expect(within(list).getAllByRole("button")).toHaveLength(2);
+  expect(
+    screen.getByRole("region", { name: "Inbox detail" }),
+  ).toBeInTheDocument();
 });
 function fixture(
   options: {
