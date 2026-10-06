@@ -6,6 +6,8 @@ import { agentProcessLabel } from "../agents/agent-edit";
 import { AgentEditor } from "../agents/AgentEditor";
 import { Button } from "../../shared/design-system/ui/Button";
 import styles from "./Profiles.module.css";
+import type { RelaySession } from "../../features/relay/session";
+import { AgentSessionSettings } from "../agents/AgentSessionSettings";
 
 /** Native status and saved-settings summary for this exact key in the active
  * community. The verified owner can open the existing editor in place when the
@@ -16,6 +18,7 @@ export function ProfileAgentRuntime({
   scope,
   pubkey,
   instanceId,
+  session,
   owned = false,
 }: {
   control: AgentControl;
@@ -23,6 +26,7 @@ export function ProfileAgentRuntime({
   scope: string;
   pubkey: string;
   instanceId?: string | undefined;
+  session: RelaySession;
   owned?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
@@ -102,6 +106,14 @@ export function ProfileAgentRuntime({
           agent={agent}
           control={control}
           state={state}
+          details={
+            agent.harness.integration === "codex" ? (
+              <AgentSessionSettings
+                agent={agent}
+                activity={session.agentActivity}
+              />
+            ) : undefined
+          }
           onClose={() => setEditing(false)}
           onOpenHarnesses={
             onOpenHarnesses

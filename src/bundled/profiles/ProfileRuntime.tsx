@@ -25,6 +25,7 @@ import { Switch } from "../../shared/design-system/ui/Switch";
 import { ToastNotice } from "../../shared/design-system/ui/Toast";
 import { AgentEditor } from "../agents/AgentEditor";
 import styles from "./Profiles.module.css";
+import { AgentSessionSettings } from "../agents/AgentSessionSettings";
 
 // Base Buzz copy. This app has no automatic restart, so only the "off" blurb applies.
 const AUTO_RESTART_OFF_BLURB =
@@ -233,6 +234,14 @@ export function ProfileRuntime({
           agent={agent}
           control={control}
           state={state}
+          details={
+            agent.harness.integration === "codex" ? (
+              <AgentSessionSettings
+                agent={agent}
+                activity={session.agentActivity}
+              />
+            ) : undefined
+          }
           onClose={() => setEditing(false)}
           onOpenHarnesses={
             onOpenHarnesses

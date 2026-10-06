@@ -32,6 +32,7 @@ const fixtureParams = new URLSearchParams(location.search);
 const avatarPreviewMode = fixtureParams.has("avatars");
 const profilePreviewMode = fixtureParams.has("profile-panel");
 const codexPreviewMode = fixtureParams.has("codex");
+const observedPreviewMode = fixtureParams.get("observed");
 // Deliberately public test key, never an account credential.
 const profileKey = new Uint8Array(32).fill(7);
 const profileViewer = getPublicKey(profileKey);
@@ -147,6 +148,20 @@ const fixture = controlFixture();
 // Browser journeys start with an explicitly manual-start agent. The shared
 // control fixture remains explicit-on for the profile preference tests.
 fixture.agent.startOnAppLaunch = false;
+if (observedPreviewMode) {
+  fixture.agent.harness = {
+    integration: "codex",
+    command: "/fixture/tools/codex-acp",
+    args: [],
+    model: "model-b",
+    provider: "",
+    configuration: {
+      mode: "advanced",
+      effort: { kind: "value", value: "high" },
+    },
+    environmentKeys: [],
+  };
+}
 const modelCalls: string[] = [];
 let modelMode = "success";
 let releaseModels: (() => void) | undefined;
@@ -384,6 +399,55 @@ Object.assign(window, { avatarProfileFixture: { profiles, communities } });
 const viewer = "de".repeat(32);
 const scope = `https://relay.example.test:${viewer}`;
 const channelId = "11111111-1111-4111-8111-111111111111";
+const observedFixtureFrame = () => {
+  if (observedPreviewMode === "missing") return null;
+  const now = new Date().toISOString();
+  const event = (kind: string, seq: number, payload: object) => ({
+    kind,
+    seq,
+    payload,
+    timestamp: now,
+    startedAt: now,
+    agentIndex: 0,
+    channelId,
+    turnId: "fixture-turn",
+    sessionId: kind === "session_resolved" ? "fixture-session" : null,
+  });
+  const events = [
+    event("acp_write", 1, { id: 1, method: "session/new", params: {} }),
+    event("acp_read", 2, {
+      id: 1,
+      result: {
+        sessionId: "fixture-session",
+        configOptions: [
+          { id: "model", category: "model", currentValue: "model-a" },
+          {
+            id: "effort",
+            category: "thought_level",
+            currentValue: "medium",
+          },
+        ],
+      },
+    }),
+    ...(observedPreviewMode === "failed"
+      ? [
+          event("control_result", 3, {
+            type: "switch_model",
+            status: "unsupported_model",
+            modelId: "model-b",
+          }),
+          event("agent_panic", 5, {}),
+        ]
+      : []),
+    event("session_resolved", 4, { sessionId: "fixture-session" }),
+  ];
+  return {
+    id: "14".repeat(32),
+    agent: fixture.agent.pubkey,
+    createdAt: Math.floor(Date.now() / 1000),
+    plaintext: JSON.stringify({ kind: "batch", payload: { events } }),
+  };
+};
 const session = createRelaySession({
   viewer: "de".repeat(32),
   relayAuthor: "ef".repeat(32),
@@ -443,6 +507,28 @@ const session = createRelaySession({
     return [];
   },
   media: () => undefined,
+  ...(observedPreviewMode
+    ? {
+        agentActivity: true,
+        subscribe(callbacks) {
+          return {
+            update() {},
+            retry() {},
+            dispose() {},
+            observe(generation) {
+              if (generation === null) return;
+              callbacks.state({
+                status: "connected",
+                routes: [{ id: "observer", status: "live", replay: "unknown" }],
+              });
+              const frame = observedFixtureFrame();
+              if (frame)
+                queueMicrotask(() => callbacks.observer?.(frame, generation));
+            },
+          };
+        },
+      }
+    : {}),
 });
 const relaySnapshot: RelaySnapshot = {
   status: "ready",

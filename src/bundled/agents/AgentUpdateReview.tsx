@@ -13,6 +13,8 @@ import type {
 import type { ChannelList } from "../../features/relay/contracts";
 import type { AgentManagementRequest } from "../../features/agents/management-request";
 import { relayOrigin } from "../../features/communities/destination";
+import { sameCommunityAgents } from "../../features/agents/choices";
+import { AgentSessionSettings } from "./AgentSessionSettings";
 
 export type PendingManagementRequest = {
   agent: string;
@@ -266,6 +268,15 @@ function SessionAgentUpdateReview({
       disabled={!confirmed}
       notice="Requested by an agent. Review every field before saving."
       onClose={dismiss}
+      details={
+        agent.harness.integration === "codex" &&
+        sameCommunityAgents([agent], connection.scope ?? "").length === 1 ? (
+          <AgentSessionSettings
+            agent={agent}
+            activity={connection.session.agentActivity}
+          />
+        ) : undefined
+      }
     >
       {!confirmed && (
         <div>

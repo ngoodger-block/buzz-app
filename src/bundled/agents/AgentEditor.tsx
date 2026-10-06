@@ -38,6 +38,7 @@ export function AgentEditor({
   notice: initialNotice,
   disabled = false,
   children,
+  details,
 }: {
   agent: AgentView;
   onOpenHarnesses?: (() => void) | undefined;
@@ -50,6 +51,7 @@ export function AgentEditor({
   notice?: string;
   disabled?: boolean;
   children?: ReactNode;
+  details?: ReactNode;
 }) {
   const notify = useToastNotification();
   const [uploading, setUploading] = useState(false);
@@ -241,6 +243,7 @@ export function AgentEditor({
                 onOpenHarnesses={onOpenHarnesses}
                 discardEdits={dirty}
               />
+              {details}
               <div className="-mx-2">
                 <Accordion
                   variant="form"

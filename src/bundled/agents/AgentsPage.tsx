@@ -36,6 +36,7 @@ import { AgentControlPanel } from "./AgentControlPanel";
 import { ManagedAgentActions } from "./ManagedAgentActions";
 import { PanelCard } from "../../features/panels/PanelCard";
 import { PanelFrame } from "../../features/panels/PanelFrame";
+import { AgentSessionSettings } from "./AgentSessionSettings";
 
 const noPanels = Object.freeze([]) as readonly RegisteredPanel[];
 const noPanelSnapshot = () => noPanels;
@@ -240,6 +241,17 @@ export function AgentsPage({
                 {control ? (
                   <AgentControlPanel
                     control={control}
+                    editorDetails={(agent) =>
+                      connection.status === "ready" &&
+                      agent.harness.integration === "codex" &&
+                      sameCommunityAgents([agent], connection.scope ?? "")
+                        .length === 1 ? (
+                        <AgentSessionSettings
+                          agent={agent}
+                          activity={connection.session.agentActivity}
+                        />
+                      ) : undefined
+                    }
                     editTarget={editTarget}
                     onOpenHarnesses={
                       open

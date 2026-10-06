@@ -24,6 +24,7 @@ import type { OpenTarget } from "../../features/navigation/targets";
 import { createAgentControl } from "../../features/agents/control";
 import { controlFixture } from "../../features/agents/control-testing";
 import { createRelaySession } from "../../features/relay/session";
+import type { RelaySession } from "../../features/relay/session";
 import type { RelayData, RelaySnapshot } from "../../features/relay/service";
 import type {
   PanelProps,
@@ -52,6 +53,7 @@ function setup(
   panels?: Panels,
   companion?: ReactNode,
   companionOpening?: object,
+  activityActivate?: RelaySession["agentActivity"]["activate"],
 ) {
   const f = controlFixture();
   configure?.(f);
@@ -87,7 +89,7 @@ function setup(
     media: () => undefined,
   });
   disposals.push(() => owned.dispose());
-  const session =
+  const baseSession =
     mode === "archived"
       ? {
           ...owned.session,
@@ -97,6 +99,15 @@ function setup(
           },
         }
       : owned.session;
+  const session = activityActivate
+    ? {
+        ...baseSession,
+        agentActivity: {
+          ...baseSession.agentActivity,
+          activate: activityActivate,
+        },
+      }
+    : baseSession;
   let snapshot: RelaySnapshot = {
     status:
       mode === "disconnected"
@@ -423,6 +434,57 @@ it("offers View profile only for an identity in the selected community", async (
     }),
   );
   expect(screen.queryByRole("menuitem", { name: "View profile" })).toBeNull();
+});
+
+it("leases observed settings only for the edited Codex agent in this community", async () => {
+  const release = vi.fn();
+  const activate = vi.fn(() => release);
+  setup(
+    "connected",
+    (fixture) => {
+      fixture.agent.harness.integration = "codex";
+      fixture.agent.harness.configuration = { mode: "default" };
+    },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    activate,
+  );
+  const cards = await screen.findAllByRole("article", {
+    name: "Agent Fixture agent",
+  });
+  const here = cards.find((card) =>
+    card.textContent?.includes("wss://relay.example.test"),
+  );
+  const elsewhere = cards.find((card) =>
+    card.textContent?.includes("wss://second.example"),
+  );
+  if (!here || !elsewhere) throw Error("Expected both community setups");
+
+  fireEvent.click(
+    within(elsewhere).getByRole("button", {
+      name: "Actions for Fixture agent",
+    }),
+  );
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Edit" }));
+  expect(
+    screen.queryByRole("region", { name: "Observed session settings" }),
+  ).toBeNull();
+  expect(activate).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Close editor" }));
+
+  fireEvent.click(
+    within(here).getByRole("button", { name: "Actions for Fixture agent" }),
+  );
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Edit" }));
+  expect(
+    await screen.findByRole("region", { name: "Observed session settings" }),
+  ).toBeVisible();
+  expect(activate).toHaveBeenCalledOnce();
+  fireEvent.click(screen.getByRole("button", { name: "Close editor" }));
+  await waitFor(() => expect(release).toHaveBeenCalledOnce());
 });
 
 it("keeps the shell companion in the page-owned companion slot", async () => {

@@ -437,6 +437,7 @@ function ProfileDetails({
                       scope={scope}
                       pubkey={pubkey}
                       instanceId={instanceId}
+                      session={session}
                       owned={isOwner}
                     />
                   )}
