@@ -26,6 +26,8 @@
     "allow-relay-direct-message",
     "allow-relay-decode-sidebar",
     "allow-relay-sign-sidebar",
+    "allow-relay-decode-reminders",
+    "allow-relay-sign-reminder",
     "allow-relay-agent-resolve",
     "allow-relay-git-authorization",
     "allow-relay-agent-log-proof",

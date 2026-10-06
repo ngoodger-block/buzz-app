@@ -82,6 +82,8 @@ fn native_command_permissions_allow_only_main_webview() {
         "relay_direct_message",
         "relay_decode_sidebar",
         "relay_sign_sidebar",
+        "relay_decode_reminders",
+        "relay_sign_reminder",
         "relay_agent_resolve",
         "relay_git_authorization",
         "relay_agent_log_proof",

@@ -24,6 +24,8 @@ pub(crate) use channel_writes::{
 };
 pub(crate) use kit::relay_kit_sign;
 mod media_preparation;
+mod reminders;
+pub(crate) use reminders::{relay_decode_reminders, relay_sign_reminder};
 mod project_git;
 pub(crate) use project_git::{relay_project_git, relay_project_git_cancel};
 type Result<T> = std::result::Result<T, String>;
@@ -658,6 +660,9 @@ pub(crate) async fn relay_http(
         }
         if kind == Some(30078) {
             admit_app_data(host.inner(), &event, &community).await?;
+        }
+        if kind == Some(30300) {
+            reminders::admit_reminder(host.inner(), &event).await?;
         }
         if kind == Some(9007) {
             verify_owned_event(host.inner(), &event).await?;
