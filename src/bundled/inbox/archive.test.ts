@@ -91,6 +91,55 @@ it("preserves archive intent when exact conversation evidence regroups and resto
   expect(h.archived(regrouped)).toBe(false);
 });
 
+it("persists a regrouped archive coordinate after its original evidence is replaced", () => {
+  const h = fixture();
+  const rootId = "a".repeat(64);
+  const reply = message(h.alice, "room", "Unresolved reply", 20, [
+    ["e", rootId, "", "reply"],
+  ]);
+  const unresolvedReply: InboxItem = {
+    ...h.item,
+    id: `room:${reply.id}`,
+    target: { kind: "message", channelId: "room", messageId: reply.id },
+    messageId: reply.id,
+    latestMessageId: reply.id,
+    messageIds: [reply.id],
+    createdAt: reply.created_at,
+    mentioned: false,
+    mentions: [],
+    thread: true,
+  };
+  updateArchive(h.scope, unresolvedReply, true);
+  expect(h.archived(unresolvedReply)).toBe(true);
+
+  const regrouped: InboxItem = {
+    ...unresolvedReply,
+    id: `room:${rootId}`,
+    rootId,
+    messageIds: [reply.id, "b".repeat(64)],
+  };
+  reopenArchives(h.scope, [regrouped]);
+  const laterReplies: InboxItem = {
+    ...regrouped,
+    messageId: "c".repeat(64),
+    latestMessageId: "c".repeat(64),
+    messageIds: ["c".repeat(64)],
+    createdAt: 40,
+    mentions: [],
+  };
+  expect(h.archived(laterReplies)).toBe(true);
+
+  const saved = readArchives(viewRevision(h.scope, archiveKey));
+  expect(saved).toEqual([
+    {
+      id: regrouped.id,
+      channelId: h.item.channelId,
+      through: 30,
+      messageIds: [reply.id],
+    },
+  ]);
+});
+
 it("partitions archives by community and viewer, and never hides a failed save", () => {
   const h = fixture();
   updateArchive(h.scope, h.item, true);

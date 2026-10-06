@@ -119,13 +119,22 @@ export function reopenArchives(
   const archives = readArchives(revision);
   if (!archives.length) return;
   const index = archiveIndex(archives);
-  const reopened = new Set(
-    items.flatMap((item) =>
-      matches(index, item).filter((archive) => renewed(archive, item)),
-    ),
-  );
-  const retained = archives.filter((archive) => !reopened.has(archive));
-  if (retained.length === archives.length) return;
+  const reopened = new Set<Archive>();
+  const regrouped = new Map<Archive, Archive>();
+  for (const item of items)
+    for (const archive of matches(index, item)) {
+      if (renewed(archive, item)) reopened.add(archive);
+      else if (archive.id !== item.id)
+        regrouped.set(archive, { ...archive, id: item.id });
+    }
+  const retained = archives
+    .filter((archive) => !reopened.has(archive))
+    .map((archive) => regrouped.get(archive) ?? archive);
+  if (
+    !reopened.size &&
+    retained.every((archive, index) => archive === archives[index])
+  )
+    return;
   if (replaceView(scope, archiveKey, revision, retained) !== "saved")
     throw new Error(
       "Could not save the reopened Inbox conversation on this device. Try again.",
