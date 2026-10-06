@@ -53,7 +53,7 @@ it("an unconfigured desktop build shows setup guidance and cannot start login", 
   const root = new Context();
   const runtime = new PluginRuntime(root, async () => builderlab);
   new HostService(root);
-  provideKnownCommunities(root);
+  const knownCommunities = provideKnownCommunities(root);
   const cards = new SettingsCardsService(root);
   try {
     runtime.reconcile([
@@ -75,6 +75,8 @@ it("an unconfigured desktop build shows setup guidance and cannot start login", 
     expect(screen.getByRole("status")).toHaveTextContent("not configured");
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(native.invoke).not.toHaveBeenCalled();
+    // No sign-in is possible, so no sync owner runs and the rail is told nothing.
+    expect(knownCommunities.status).not.toHaveBeenCalled();
   } finally {
     cleanup();
     await runtime.dispose();
