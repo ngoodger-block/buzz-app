@@ -42,19 +42,31 @@ export const apply: PluginModule["apply"] = (ctx) => {
   const page = { pluginId: "buzz.reminders", pageId: "reminders" };
 
   ctx.effect(() => {
-    // Reminders already due at launch stay on the page; only new arrivals notify.
-    let watermark = now;
+    // Per community: reminders already due when it is first bound stay on the
+    // page; only later arrivals notify.
+    const watermarks = new Map<string, number>();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let bound: Reminders | undefined;
+    let boundScope = "";
     let unbind: (() => void) | undefined;
     const check = () => {
       clearTimeout(timer);
       now = nowSeconds();
       for (const listener of clock) listener();
       const connection = relay.snapshot();
-      if (!bound || connection.status !== "ready") return;
-      const { reminders } = bound.snapshot();
+      // Only the session this window was bound for may advance it.
+      if (
+        !bound ||
+        connection.status !== "ready" ||
+        connection.session.reminders !== bound
+      )
+        return;
+      const { status, reminders } = bound.snapshot();
+      // Hold the window open until the first read lands, so history that
+      // arrives after a live update still notifies.
+      if (status !== "ready") return;
       const scope = scopeOf(connection);
+      const watermark = watermarks.get(boundScope) ?? now;
       for (const reminder of dueSince(reminders, watermark, now)) {
         const message = navigableTarget(reminder);
         const target: OpenTarget =
@@ -71,7 +83,7 @@ export const apply: PluginModule["apply"] = (ctx) => {
           .submit({ sourceKey: `${reminder.id}:${reminder.notBefore}`, target })
           .catch(() => {});
       }
-      watermark = now;
+      watermarks.set(boundScope, now);
       // After sleep the timer fires late; the watermark still covers the gap.
       const delay = nextDelay(reminders, now);
       if (delay !== undefined) timer = setTimeout(check, delay);
@@ -85,6 +97,9 @@ export const apply: PluginModule["apply"] = (ctx) => {
       if (next !== bound) {
         unbind?.();
         bound = next;
+        boundScope = connection.scope ?? "";
+        if (next && !watermarks.has(boundScope))
+          watermarks.set(boundScope, nowSeconds());
         unbind = next?.subscribe(check);
         void next?.refresh();
       }
