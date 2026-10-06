@@ -67,6 +67,11 @@ pnpm exec playwright test --config tests/browser/playwright.config.mjs \
   tests/browser/agent-control.spec.mjs --grep "Codex Create" \
   --project chromium --project webkit --no-deps
   2 tests passed
+
+pnpm exec playwright test --config tests/browser/playwright.config.mjs \
+  tests/browser/agent-control.spec.mjs \
+  --project chromium --project webkit --no-deps
+  36 tests passed in 2.6 minutes
 ```
 
 The browser journey uses the production React components and
@@ -95,10 +100,11 @@ retires its unused ticket without inference, failed validation preserves the
 record, and journal recovery reuses one identity across a fresh host.
 
 Independent review runs reported 138 passing existing Agent page/editor/defaults
-tests and 137 passing control/orchestration tests. PR 4's hosted run
-`37513686030` passed every required Rust, JavaScript, Chromium, and WebKit Linux
-job; Windows native validation was intentionally skipped because the current
-native support is Unix-only.
+tests and 137 passing control/orchestration tests. A final focused review on
+`97a6621b` passed 144 tests across six files in 7.35 seconds, including the native
+control boundary. PR 4's hosted run `37513686030` passed every required Rust,
+JavaScript, Chromium, and WebKit Linux job; Windows native validation was
+intentionally skipped because the current native support is Unix-only.
 
 Independent interactive QA used the isolated `agent-control.html?codex` fixture.
 Keyboard selection reached Codex Default and Advanced while provider, API-key,
@@ -106,10 +112,12 @@ and Databricks controls stayed absent. A held validation cancelled in place and
 retained the editable name and configuration. The quota mode retained its draft
 and displayed the synthetic quota category. The recovery mode matched a native-
 style `wss://relay.example.test` journal to the form's
-`https://relay.example.test` destination; after the reviewer re-entered Codex
-Default and the original name, Resume produced one recovered card while the
-original Fixture agent stayed unchanged. These are simulated UI outcomes, not
-live account, relay, or credential-store acceptance.
+`https://relay.example.test` destination; after the reviewer entered Codex
+Default and a sample name, Resume produced one recovered card while the original
+Fixture agent stayed unchanged. The fixture does not enforce the recovery input
+digest; the native recovery test proves reuse of the original input and identity.
+The reviewer also exercised explicit journal discard. These are simulated UI
+outcomes, not live account, relay, or credential-store acceptance.
 
 ## Evidence boundary
 
