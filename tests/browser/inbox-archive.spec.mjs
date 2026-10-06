@@ -19,6 +19,7 @@ test("Inbox archive scope is separate from attention filters and preserves them"
   page,
   app,
 }, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(app.origin);
   await openPage(page, "Inbox");
   const inbox = page.getByRole("region", { name: "Inbox", exact: true });
@@ -60,11 +61,10 @@ test("Inbox archive scope is separate from attention filters and preserves them"
   await archivedButton.click();
   await expect(rows).toHaveCount(1);
   await expect(archivedButton).toHaveAttribute("aria-pressed", "true");
-  await expect(
-    archivedButton.evaluate(
-      (button) => getComputedStyle(button).backgroundColor,
-    ),
-  ).not.toBe(selectedScopeBackground);
+  await expect(archivedButton).toHaveCSS(
+    "background-color",
+    "rgb(255, 255, 255)",
+  );
   await expect(inbox.getByRole("combobox", { name: "Sender" })).toContainText(
     "Agents",
   );
