@@ -71,7 +71,7 @@ struct HarnessOption {
     install_supported: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     update_supported: Option<bool>,
-    default_args: &'static [&'static str],
+    default_args: Vec<String>,
     providers: &'static [ProviderOption],
 }
 #[derive(Serialize)]
@@ -201,7 +201,7 @@ fn harness_options(app_data: &std::path::Path) -> Vec<HarnessOption> {
             node: buzz_agent_controller::managed_tool(app_data, "node"),
         },
     );
-    vec![
+    let mut options = vec![
         HarnessOption {
             command: "buzz-agent".into(),
             label: "Buzz Agent",
@@ -209,7 +209,7 @@ fn harness_options(app_data: &std::path::Path) -> Vec<HarnessOption> {
             status: "ready",
             install_supported: None,
             update_supported: None,
-            default_args: &[],
+            default_args: vec![],
             // Windows refuses Databricks sign-in (DATABRICKS_WINDOWS): omit it.
             providers: &[
                 ProviderOption {
@@ -229,7 +229,7 @@ fn harness_options(app_data: &std::path::Path) -> Vec<HarnessOption> {
             status: "ready",
             install_supported: None,
             update_supported: None,
-            default_args: &[],
+            default_args: vec![],
             providers: GOOSE_PROVIDERS,
         },
         HarnessOption {
@@ -245,11 +245,40 @@ fn harness_options(app_data: &std::path::Path) -> Vec<HarnessOption> {
                 any(target_arch = "x86_64", target_arch = "aarch64")
             ))),
             update_supported: Some(pi_managed && pi_status == "ready" && !pi_current(app_data)),
-            default_args: &[],
+            default_args: vec![],
             // Pi reports signed-in providers through its model catalog.
             providers: &[],
         },
-    ]
+    ];
+    options.extend(
+        buzz_agent_controller::harness_presets()
+            .iter()
+            .map(|preset| preset_option(preset, buzz_agent_controller::installed(&preset.command))),
+    );
+    options
+}
+
+fn preset_option(
+    preset: &'static buzz_agent_controller::HarnessPreset,
+    command: Option<PathBuf>,
+) -> HarnessOption {
+    HarnessOption {
+        available: command.is_some(),
+        status: if command.is_some() {
+            "ready"
+        } else {
+            "cli-needed"
+        },
+        command: command.map_or_else(
+            || preset.command.clone(),
+            |p| p.to_string_lossy().into_owned(),
+        ),
+        label: &preset.label,
+        install_supported: Some(false),
+        update_supported: Some(false),
+        default_args: preset.args.clone(),
+        providers: &[],
+    }
 }
 
 struct LogChallenge {

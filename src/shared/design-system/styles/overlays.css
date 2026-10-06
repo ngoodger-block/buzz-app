@@ -55,6 +55,9 @@
   .buzz-dialog-step[inert] {
     pointer-events: none;
   }
+  .buzz-dialog[data-size="wide"] {
+    width: min(56rem, calc(100vw - 2rem));
+  }
   .buzz-dialog[data-size="expanded"] {
     width: calc(100vw - 3rem);
     height: calc(100dvh - 3rem);

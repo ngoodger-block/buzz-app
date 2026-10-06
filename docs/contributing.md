@@ -157,9 +157,11 @@ ports must be integers from 1 to 65535. Browser dev
 prints its selected URL and can use a later port when the requested port is
 occupied. Port selection does not isolate credentials or native plugin data;
 use the existing `BUZZODZ_PROFILE` setting for separate plugin profiles.
-Both run the development broker with your identity when the public
-`BUZZ_DEV_VIEWER` pin is configured in `.env.local`, and start without live
-identity otherwise; see [the setup and Keychain requirements](../README.md#relay-channels).
+A public `BUZZ_DEV_VIEWER` pin enables the legacy development broker for either
+command. Without it, browser development has no live broker identity, while
+supported desktop development can use native identity and relay access. See
+[host modes below](#shared-logic-and-host-boundaries) and
+[the broker setup requirements](../README.md#relay-channels).
 
 After creating a worktree, bootstrap it from the checkout whose local development
 configuration it should inherit:
@@ -193,6 +195,70 @@ if it fails, startup warns and continues with the ordinary icon. Explicit Tauri
 Ordinary checkouts, non-macOS launches, and `pnpm tauri build` keep their existing
 icons. This does not change the app identifier, credentials, profiles, or
 notification settings.
+
+## Shared logic and host boundaries
+
+Browser and desktop share the React application, community sessions, durable
+outbox, protocol models and live scheduler. `dev/` is the Node host for browser
+development and broker-backed tests, not generated output or another relay.
+Packaged desktop uses the Rust host. Node code does not run in a browser merely
+because it serves one, and packaged desktop does not need a Node backend.
+
+| Mode | Identity and relay host |
+| --- | --- |
+| `just web`, public `BUZZ_DEV_VIEWER` pin | Node broker using the pinned existing legacy identity (macOS/Linux) |
+| `just web`, no pin | Shell/fixtures; no live broker identity |
+| `just desktop`, public pin | Legacy broker identity/relay access, even inside the native window; native-only capabilities may coexist |
+| `just desktop`, no pin | Native identity/relay access on supported macOS, Windows and Linux |
+| Packaged desktop | Native host; production builds exclude the dev broker regardless of the pin |
+
+A static frontend build does not supply a standalone browser login/backend.
+The public pin does not migrate keys. Native debug worktrees share a credential
+namespace distinct from release and legacy broker credentials; ports and plugin
+profiles do not isolate those keys. Removing the pin may change the active
+identity, not just the transport. Do not change defaults, credentials or a running
+app as incidental cleanup. See [identity custody and acceptance](identity.md).
+
+### Where behavior belongs
+
+- Put platform-neutral models, edits and protocol policy in their existing
+  `src/features/*` owner, with current callers rather than speculative adapter
+  parity. The Node host and native frontend adapter can reuse dependency-free
+  TypeScript where appropriate;
+  [sidebar edits](../src/features/relay/sidebar-edits.ts) and
+  [community commands](../src/features/communities/admin-protocol.ts) are examples.
+  Shared modules must not depend on Node, Tauri or a dev-host implementation.
+- Keep signing keys, decryption, secure storage, subprocesses and host I/O in the
+  host. Each independently callable HTTP/IPC boundary retains its own validation,
+  signing policy, destination/identity binding, resource limits, cancellation and
+  lifecycle ownership. Moving checks into shared frontend code is not a substitute
+  for Rust enforcement. The relay remains the access-control authority.
+- For necessary cross-language implementations, share concrete contract cases
+  rather than inventing a universal adapter or code generator. Existing JSON
+  fixtures can be read by Vitest and Rust `include_str!`. Document intentional or
+  unresolved differences with separate expected outcomes; neither implementation
+  automatically defines the intended policy. Changing those outcomes is a behavior
+  decision, not a refactor. Do not add a second source of feature policy in `dev/`.
+
+### Review and evidence
+
+A cross-host change names its feature owner/current consumers, supported modes,
+behavior preserved or explicitly approved differences, and the duplicate code it
+removes. Update the feature's contract cases and relevant wiring tests in the
+same change. Reuse existing runners and CI; this is not an extra full-suite gate
+for each edit. Keep feature details with their owner, not copied into this guide.
+
+[Canvas shape cases](../src/features/channel-templates/canvas-signing-contract.json)
+are consumed by the Node and Rust tests. They cover kind-40100 tag shape, including
+an explicitly rejected native deserialization case; each host separately tests the
+UTF-8 content limit. This is not whole endpoint parity: broker freshness checks,
+native serialized-event limits, HTTP/IPC authorization and publication outcomes
+are separate layers. Existing host-specific checks remain necessary.
+
+Report the exact snapshot and host/mode exercised. A broker-backed browser fixture,
+or a Tauri window using that broker, does not prove native signing, OS storage,
+networking or filesystem behavior. Native/live acceptance needs an agreed isolated
+identity/data setup; browser fixtures and test identities must never use real keys.
 
 ## Interactive product iteration
 

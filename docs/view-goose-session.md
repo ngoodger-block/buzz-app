@@ -35,9 +35,10 @@ and model against the Buzz thread before exporting.
 
 ## Export and open HTML
 
-The [Goose HTML export PR](https://github.com/aaif-goose/goose/pull/11977)
-tracks this feature. Until it lands in your installed Goose release, build the
-binary from that PR's current source branch and use it for export:
+HTML export ([goose#11977](https://github.com/aaif-goose/goose/pull/11977)) is
+merged to Goose `main` but is not in v1.53.0 or earlier releases. Until your
+installed Goose includes it, build the binary from Goose `main` and use it for
+export:
 
 ```sh
 /path/to/goose session export \

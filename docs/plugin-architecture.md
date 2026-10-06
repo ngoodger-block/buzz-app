@@ -406,7 +406,27 @@ Plugins declaring `host` in `inject` use `ctx.host.runCommand(id)` and
 `ctx.host.request({ url, method, headers, body })`. Command calls name a declared
 ID; the program and arguments come only from the plugin's manifest. Native
 execution uses no shell or stdin, discards stderr, and returns at most 4 KiB of
-UTF-8 stdout. The direct command invocation has a five-second deadline;
+UTF-8 stdout by default. A command may declare `maxOutputBytes`, an integer from
+1 through 1048576 (1 MiB), to request a different bound. Output exceeding that
+bound returns `null` without truncation. Existing declarations retain the 4 KiB
+default. Hosts that do not support this field reject manifests that declare it.
+
+For example, a plugin querying tools available to an agent may need room for a
+JSON inventory containing tool names and descriptions:
+
+```json
+{
+  "id": "agent-tools",
+  "program": "agent-tools",
+  "args": ["list", "--json"],
+  "maxOutputBytes": 65536
+}
+```
+
+This is a command entry inside `host.commands`. The plugin parses the inventory;
+the host only enforces the declared byte limit.
+
+The direct command invocation has a five-second deadline;
 cancellation or timeout kills its process group on Unix or its job process tree
 on Windows. Failure returns `null`. The app
 also searches standard Homebrew binary directories when a macOS GUI launch has a

@@ -181,7 +181,7 @@ test("built sidebar → visible dwell → durable journal → encrypted broker p
   await expect(alpha(page).getByRole("img")).toHaveCount(0);
 });
 
-test("focus cancellation and local manual-unread survive dwell/reload until explicit mark-through", async ({
+test("focus cancellation and local manual-unread survive reload until explicit mark-through or reading to the bottom", async ({
   page,
   app,
 }) => {
@@ -270,15 +270,6 @@ test("focus cancellation and local manual-unread survive dwell/reload until expl
     }),
   ).toBeVisible();
   await park(page);
-  await history(page).focus();
-  await page.clock.runFor(1000);
-  expect((await journal(page)).localUnread[alphaId]).toBeGreaterThan(0);
-  await expect(
-    alpha(page).getByRole("img", {
-      name: "Marked unread on this device only",
-      exact: true,
-    }),
-  ).toBeVisible();
   await page.clock.resume();
   app.relay.holdContent(); // Reload must use verified disk evidence, not wait for network repair.
   await page.reload();
@@ -300,9 +291,33 @@ test("focus cancellation and local manual-unread survive dwell/reload until expl
   await expect
     .poll(async () => (await journal(page)).localUnread[alphaId])
     .toBeUndefined();
+  const newest = app.histories.get(`primary/${alphaId}`).at(-1).created_at;
   await expect
     .poll(async () => (await journal(page)).state.frontiers[alphaId])
-    .toBe(app.histories.get(`primary/${alphaId}`).at(-1).created_at);
+    .toBe(newest);
+  await expect(alpha(page).getByRole("img")).toHaveCount(0);
+  // Reading to the live bottom also ends a manual unread, without moving the
+  // channel mark. Channel settings stays open from Mark read so the timeline
+  // keeps its layout. Reload does not promise the live bottom, so scroll there
+  // as a reader would.
+  await park(page);
+  await page
+    .getByRole("button", { name: "Mark unread on this device", exact: true })
+    .click();
+  await expect
+    .poll(async () => (await journal(page)).localUnread[alphaId])
+    .toBeGreaterThan(0);
+  await history(page).evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect(
+    page.getByRole("button", { name: "Jump to latest", exact: true }),
+  ).toBeHidden();
+  await history(page).focus();
+  await expect
+    .poll(async () => (await journal(page)).localUnread[alphaId])
+    .toBeUndefined();
+  expect((await journal(page)).state.frontiers[alphaId]).toBe(newest);
   await expect(alpha(page).getByRole("img")).toHaveCount(0);
 });
 

@@ -120,21 +120,20 @@ test("Inbox DM composer focus reads a visible peer arrival after dwell without r
   await filter.focus();
   await composer.focus();
   await page.clock.runFor(299);
+  expect((await readJournal(page)).state.frontiers["dm-peer"]).toBe(cutoff);
+  await expect(dmRow.getByRole("img", { name: "Unread" })).toBeVisible();
+  await page.clock.runFor(1);
+  // Reading a DM reads all of it, through the newest message, with one
+  // channel mark rather than a mark per message.
+  await expect
+    .poll(async () => (await readJournal(page)).state.frontiers["dm-peer"])
+    .toBe(incoming.created_at);
+  await expect(dmRow.getByRole("img", { name: "Unread" })).toHaveCount(0);
   expect(
     (await readJournal(page)).state.frontiers[`msg:${incoming.id}`],
   ).toBeUndefined();
-  await expect(dmRow.getByRole("img", { name: "Unread" })).toBeVisible();
-  await page.clock.runFor(1);
-  await expect
-    .poll(
-      async () =>
-        (await readJournal(page)).state.frontiers[`msg:${incoming.id}`],
-    )
-    .toBe(incoming.created_at);
-  await expect(dmRow.getByRole("img", { name: "Unread" })).toHaveCount(0);
-  // Automatic per-message reading must not replace the visit's captured cutoff
-  // or recreate its composer/draft as the Inbox row's representative changes.
-  expect((await readJournal(page)).state.frontiers["dm-peer"]).toBe(cutoff);
+  // Reading must not recreate the composer/draft as the Inbox row's
+  // representative changes.
   await expect(composer).toBeFocused();
   await expect(composer).toHaveText(draft);
   await page.clock.resume();

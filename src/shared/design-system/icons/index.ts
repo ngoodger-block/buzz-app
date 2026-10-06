@@ -2,6 +2,24 @@ import { defineIcon } from "./createDecorativeIcon";
 import { BestieMarkArtwork } from "./BestieMark";
 import { GitHubIssueArtwork } from "./GitHubIssue";
 import { OneDriveLogoArtwork } from "./OneDriveLogo";
+import { GooseLogoArtwork, PiLogoArtwork } from "./HarnessLogos";
+
+// Brand artwork requested for Harness Settings; general UI glyphs remain Tabler.
+export const GooseLogoIcon = defineIcon("custom", GooseLogoArtwork, {
+  meaning: "Goose harness",
+  category: "Custom brand mark",
+  provenance:
+    "Official Block Goose mark (Apache-2.0), reused from old Buzz by explicit design request; see NOTICE.md",
+  intendedSizes: [{ width: 32, height: 32 }],
+});
+export const PiLogoIcon = defineIcon("custom", PiLogoArtwork, {
+  meaning: "Pi harness",
+  category: "Custom brand mark",
+  provenance:
+    "Official Earendil Pi favicon (MIT), reused from old Buzz by explicit design request; see NOTICE.md",
+  intendedSizes: [{ width: 32, height: 32 }],
+});
+
 import TablerArrowClockwiseIcon from "@tabler/icons-react/dist/esm/icons/IconRotateClockwise.mjs";
 export const ArrowClockwiseIcon = defineIcon(
   "tabler",

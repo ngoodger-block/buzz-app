@@ -15,8 +15,10 @@ it("derives the complete categorized inventory from the public gateway", () => {
   expect(customNames).toEqual([
     "BestieIcon",
     "GitHubIssueIcon",
+    "GooseLogoIcon",
     "HashArrowInIcon",
     "OneDriveLogoIcon",
+    "PiLogoIcon",
   ]);
   expect([...tablerNames, ...customNames].sort()).toEqual(
     Object.keys(gatewayIcons).sort(),
@@ -39,6 +41,11 @@ it("derives the complete categorized inventory from the public gateway", () => {
       intendedSizes: [{ width: 22, height: 22 }],
     }),
     expect.objectContaining({
+      name: "GooseLogoIcon",
+      category: "Custom brand mark",
+      intendedSizes: [{ width: 32, height: 32 }],
+    }),
+    expect.objectContaining({
       name: "HashArrowInIcon",
       category: "messaging",
       intendedSizes: [{ width: 16, height: 16 }],
@@ -47,6 +54,11 @@ it("derives the complete categorized inventory from the public gateway", () => {
       name: "OneDriveLogoIcon",
       category: "Custom brand mark",
       intendedSizes: [{ width: 14, height: 14 }],
+    }),
+    expect.objectContaining({
+      name: "PiLogoIcon",
+      category: "Custom brand mark",
+      intendedSizes: [{ width: 32, height: 32 }],
     }),
   ]);
 });

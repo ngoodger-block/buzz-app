@@ -36,7 +36,7 @@ import type { Context, AgentControl, Host, PluginManifest, NamingPolicy } from "
 export const manifest: PluginManifest = {
   id: "example.plugin", name: "Example", apiVersion: 1,
   host: {
-    commands: [{ id: "status", program: "example-cli", args: ["status"] }],
+    commands: [{ id: "status", program: "example-cli", args: ["status"], maxOutputBytes: 65536 }],
     networkOrigins: ["https://api.example.com"],
   },
 };

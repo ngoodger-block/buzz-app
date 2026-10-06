@@ -40,7 +40,9 @@ just desktop --port 1431
 
 Ports do not isolate account credentials or native plugin data. For separate
 plugin profiles, use the existing `BUZZODZ_PROFILE` setting described below.
-Without live opt-in they run the shell without relay identity access.
+Without a public viewer pin, browser development runs the shell/fixtures;
+supported desktop development can use [native identity and relay access](docs/identity.md).
+See the [host-mode matrix](docs/contributing.md#shared-logic-and-host-boundaries).
 `just iterate` applies formatting and runs fast checks plus the frontend build.
 `just scan` adds tests and native checks. [PR CI](.github/workflows/ci.yml) runs
 those checks in cached, parallel jobs with sharded browser journeys.
@@ -70,13 +72,15 @@ per-platform steps and limits.
 
 ## Relay channels
 
-Live development currently requires **an existing Buzz account in the OS credential
-store**: the `buzz-desktop` / `secrets` Keychain entry on macOS, or the same entry in
+Live **browser/broker development** requires an existing Buzz account in the OS credential
+store: the `buzz-desktop` / `secrets` Keychain entry on macOS, or the same entry in
 the freedesktop secret service on Linux (read with libsecret's `secret-tool`, so
 install `libsecret-tools` and run inside an unlocked desktop session). This development broker is not native
 sign-in and is not included in packaged builds. `just web` and `just desktop` run
-it automatically once `BUZZ_DEV_VIEWER` is configured; without that pin they start
-in the non-live shell/fixture state.
+it automatically once `BUZZ_DEV_VIEWER` is configured, including inside the native
+window. Without that pin, web stays in shell/fixture mode and supported desktop
+uses its separate [native identity path](docs/identity.md). Removing the pin can
+change the active identity; it does not migrate the legacy key.
 
 1. Copy your existing Buzz account's **public key** (npub or 64-character hex).
 2. Add it to the git-ignored `.env.local` at this repository's root. The optional

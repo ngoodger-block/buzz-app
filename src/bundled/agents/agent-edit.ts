@@ -1,3 +1,5 @@
+import { harnessPreset } from "../../features/agents/harness-presets";
+export { harnessKind, isGoose } from "../../features/agents/harness-presets";
 import type { AgentEdit, AgentView } from "../../features/agents/control";
 
 export interface AgentDraft {
@@ -13,24 +15,6 @@ export interface AgentDraft {
   provider: string;
   environment: Record<string, string | null>;
   databricks?: { host: string; filter: string } | null;
-}
-export function isGoose(command: string): boolean {
-  const name = command
-    .replaceAll("\\", "/")
-    .split("/")
-    .at(-1)
-    ?.replace(/\.exe$/, "");
-  return name === "goose" || name === "goose-acp";
-}
-/** Agent defaults harness a saved command belongs to, matching native. */
-export function harnessKind(
-  command: string,
-): "buzz-agent" | "goose" | "pi" | undefined {
-  const name = command.replaceAll("\\", "/").split("/").at(-1);
-  if (name === "buzz-agent") return "buzz-agent";
-  if (isGoose(command)) return "goose";
-  if (name === "buzz-pi-acp") return "pi";
-  return undefined;
 }
 // Goose provider config keys, checked against built-in ConfigKey declarations
 // and declarative provider api_key_env values. OAuth/local providers have none.
@@ -93,6 +77,9 @@ export function agentEdit(
   if (!draft.command.trim()) throw new Error("Enter a harness executable.");
   if (!modelDiscovery && !draft.workspace.trim())
     throw new Error("Enter a workspace path.");
+  const preset = harnessPreset(draft.command);
+  if (preset && (draft.model || draft.provider))
+    throw new Error(`Use ${preset.label} defaults before saving this agent.`);
   let args: unknown;
   try {
     args = JSON.parse(draft.args);

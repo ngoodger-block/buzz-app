@@ -473,7 +473,8 @@ it("late DM metadata updates an existing attention selector without expiring rea
   expect(h.snapshot()).not.toBe(before);
   expect(changed).toHaveBeenCalledTimes(1);
   await reading.observe([row.id]);
-  expect(h.journal()?.state.frontiers[`msg:${row.id}`]).toBe(11);
+  // Reading a DM reads all of it.
+  expect(h.journal()?.state.frontiers).toEqual({ room: 11 });
 });
 
 it.each(["lowercase", "uppercase reply", "uppercase root", "last valid"])(
@@ -2141,27 +2142,74 @@ it("bottom catch-up preserves mentions, broadcasts, participating threads and la
   lease.dispose();
 });
 
-it("ordinary catch-up never clears DM attention", async () => {
+it.each(["catchUp", "observe"] as const)(
+  "reading a DM (%s) reads all of it and ends its manual unread",
+  async (step) => {
+    const h = setup();
+    h.grant("room");
+    const first = message(h.alice, "room", "first", 11);
+    const reply = message(h.alice, "room", "reply", 14, [
+      ["e", first.id, "", "reply"],
+    ]);
+    const row = message(h.alice, "room", "direct", 12);
+    h.emit([
+      first,
+      reply,
+      row,
+      signed(h.relay, {
+        kind: 39000,
+        created_at: 20,
+        content: "",
+        tags: [
+          ["d", "room"],
+          ["name", "DM"],
+          ["t", "dm"],
+        ],
+      }),
+    ]);
+    await h.session.unread.markUnreadLocal(h.target);
+    const lease = h.session.unread.reading("room");
+    if (step === "catchUp") await lease.catchUp(row.id);
+    else await lease.observe([row.id]);
+    // One channel mark through the newest message, replies included.
+    expect(h.journal()?.state.frontiers).toEqual({ room: 14 });
+    expect(h.snapshot()).toMatchObject({
+      observedCount: 0,
+      attentionCount: 0,
+      manual: "none",
+    });
+    lease.dispose();
+  },
+);
+
+it("bottom catch-up ends a manual channel unread but keeps marked messages", async () => {
   const h = setup();
   h.grant("room");
-  const row = message(h.alice, "room", "direct", 11);
-  h.emit([
-    row,
-    signed(h.relay, {
-      kind: 39000,
-      created_at: 20,
-      content: "",
-      tags: [
-        ["d", "room"],
-        ["name", "DM"],
-        ["t", "dm"],
-      ],
-    }),
-  ]);
+  const marked = message(h.alice, "room", "marked", 11);
+  const bottom = message(h.alice, "room", "bottom", 12);
+  h.emit([marked, bottom]);
+  const markedTarget = {
+    kind: "message" as const,
+    channelId: "room",
+    messageId: marked.id,
+  };
+  await h.session.unread.markUnreadLocal(markedTarget);
+  await h.session.unread.markUnreadLocal(h.target);
   const lease = h.session.unread.reading("room");
-  await lease.catchUp(row.id);
-  expect(h.snapshot()).toMatchObject({ observedCount: 1, attentionCount: 1 });
+  // Reading rows away from the bottom keeps the manual unread.
+  await lease.observe([bottom.id]);
+  expect(h.snapshot().manual).toBe("local-only");
+  await lease.catchUp(bottom.id);
+  expect(h.journal()?.state.frontiers).toMatchObject({ "activity:room": 12 });
+  expect(h.journal()?.localUnread).not.toHaveProperty("room");
+  expect(h.session.unread.snapshot(markedTarget).manual).toBe("local-only");
   lease.dispose();
+  // Already caught up: reaching the bottom again still ends a new manual unread.
+  await h.session.unread.markUnreadLocal(h.target);
+  const again = h.session.unread.reading("room");
+  await again.catchUp(bottom.id);
+  expect(h.journal()?.localUnread).not.toHaveProperty("room");
+  again.dispose();
 });
 
 it("thread bottom catch-up clears only its thread and preserves local and remote manual intent", async () => {
@@ -2910,10 +2958,157 @@ it("evicted DM receipts survive pressure while unseen messages and manual unread
   const dmReading = unread.reading("dm");
   await dmReading.observe([read.id]);
   dmReading.dispose();
+  // Reading a DM reads all of it, but a message marked unread stays unread.
   expect(unread.snapshot(target).manual).toBe("local-only");
   expect(unread.attention("dm", read.id).unread).toBe(true);
+  expect(unread.attention("dm", unseen.id).unread).toBe(false);
   await unread.markMessageRead("dm", read.id);
   expect(unread.snapshot(target).manual).toBe("none");
   expect(unread.attention("dm", read.id).unread).toBe(false);
-  expect(unread.attention("dm", unseen.id).unread).toBe(true);
+});
+
+/**
+ * Two windows of one viewer over one read-state partition, as two tabs share
+ * IndexedDB. Each owner keeps its own cached journal; `hold` pauses the next
+ * save of one owner before its transaction reads the shared journal.
+ */
+function sharedWindows(preloaded: (journal: ReadJournal) => ReadJournal) {
+  const viewer = keypair(),
+    relay = keypair(),
+    alice = keypair();
+  let journal: ReadJournal = preloaded(newReadJournal());
+  const window = () => {
+    let hold: Promise<void> | undefined;
+    let started = () => {};
+    const storage: ReadStateStorage = {
+      async update(change) {
+        if (hold) {
+          const wait = hold;
+          hold = undefined;
+          started();
+          await wait;
+        }
+        journal = readJournal(change(journal), viewer.pubkey);
+        return journal;
+      },
+      close() {},
+    };
+    let incoming: (events: readonly RelayEvent[]) => void = () => {};
+    const owner = createRelaySession(
+      {
+        viewer: viewer.pubkey,
+        relayAuthor: relay.pubkey,
+        query: async () => [],
+        media: () => undefined,
+        readState: {
+          decode: async (events: readonly RelayEvent[]) =>
+            decodeReadState(events, viewer.secret),
+          sign: async (intent: ReadStateSigning) =>
+            signReadState(intent, viewer.secret),
+          publish: async () => {},
+        },
+        subscribe(callbacks) {
+          incoming = callbacks.receive;
+          return { update() {}, retry() {}, dispose() {} };
+        },
+      },
+      {
+        readStateStorage: storage,
+        readPublisherLock: async (_signal, work) => work(),
+      },
+    );
+    owners.push(owner);
+    return {
+      unread: owner.session.unread,
+      emit: (events: readonly RelayEvent[]) => incoming(events),
+      holdSave() {
+        let release = () => {};
+        const reached = new Promise<void>((resolve) => {
+          started = resolve;
+        });
+        hold = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return { started: reached, release };
+      },
+    };
+  };
+  return {
+    viewer,
+    relay,
+    alice,
+    a: window(),
+    b: window(),
+    journal: () => journal,
+  };
+}
+
+it.each(["dm", "frontier and clear", "clear only"] as const)(
+  "an older window's dwell cannot erase a newer Mark unread from another window (%s)",
+  async (path) => {
+    const w = sharedWindows((journal) => ({
+      ...journal,
+      revision: 1,
+      acceptedRevision: 1,
+      // Both windows load manual revision 1. "clear only" is already caught
+      // up, so bottom catch-up only ends the manual unread.
+      localUnread: { room: 1 },
+      state: {
+        frontiers: path === "clear only" ? { room: 12 } : {},
+        overrides: {},
+      },
+    }));
+    const bottom = message(w.alice, "room", "bottom", 12);
+    for (const side of [w.a, w.b]) {
+      side.emit([
+        roster(w.relay, "room", [w.viewer.pubkey], 10),
+        metadata(
+          w.relay,
+          "room",
+          "room",
+          10,
+          path === "dm" ? [["t", "dm"]] : [],
+        ),
+        message(w.alice, "room", "earlier", 11),
+        bottom,
+      ]);
+      await side.unread.ensure();
+    }
+    const target = { kind: "channel" as const, channelId: "room" };
+    expect(w.b.unread.snapshot(target).manual).toBe("local-only");
+    // B earns a bottom dwell; its save waits before reading the journal.
+    const lease = w.b.unread.reading("room");
+    const held = w.b.holdSave();
+    const dwell = lease.catchUp(bottom.id).then(
+      () => "saved",
+      () => "expired",
+    );
+    await held.started;
+    // Meanwhile A marks the channel unread again: manual revision 2.
+    await w.a.unread.markUnreadLocal(target);
+    const marked = w.journal().localUnread.room;
+    expect(marked).toBeGreaterThan(1);
+    held.release();
+    expect(await dwell).toBe("expired");
+    lease.dispose();
+    expect(w.journal().localUnread.room).toBe(marked);
+    expect(w.journal().state.frontiers).toEqual(
+      path === "clear only" ? { room: 12 } : {},
+    );
+  },
+);
+
+it("a DM dwell with no verified message does not read the DM", async () => {
+  const h = setup();
+  h.grant("dm");
+  h.emit([
+    metadata(h.relay, "dm", "DM", 11, [["t", "dm"]]),
+    message(h.alice, "dm", "unseen", 12),
+  ]);
+  await h.session.unread.ensure();
+  const lease = h.session.unread.reading("dm");
+  await lease.observe([]);
+  await lease.observe(["f".repeat(64)]);
+  lease.dispose();
+  expect(h.journal()?.state.frontiers.dm).toBeUndefined();
 });

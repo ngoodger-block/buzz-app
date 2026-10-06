@@ -9,6 +9,7 @@ pub mod connection;
 mod create;
 mod credentials;
 mod defaults;
+mod harness_presets;
 mod import;
 pub mod logs;
 mod ownership;
@@ -29,6 +30,7 @@ pub use config::{AgentEdit, AgentView, ControlSnapshot, HarnessEdit, ProcessStat
 pub use create::{CreationProfile, NewAgent};
 pub use credentials::PlatformCredentials;
 pub use defaults::{build_defaults, BuildDefaults};
+pub use harness_presets::{harness_preset, harness_presets, HarnessPreset};
 pub use import::{
     CloneSettings, CredentialedImport, ImportPreview, Imports, LegacySource, PreparedImport,
 };

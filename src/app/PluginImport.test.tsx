@@ -6,6 +6,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { PluginManager } from "../plugins/manager";
@@ -102,6 +103,105 @@ it("shows exact declared access and changes before an enabled update", async () 
   ).toBeVisible();
   expect(manager.installImport).not.toHaveBeenCalled();
 });
+
+it.each([
+  { previous: undefined, next: 65536, changed: true },
+  { previous: 65536, next: 131072, changed: true },
+  { previous: 4096, next: 1048576, changed: true },
+  { previous: 65536, next: 4096, changed: true },
+  { previous: 65536, next: undefined, changed: true },
+  { previous: undefined, next: 4096, changed: false },
+  { previous: 4096, next: undefined, changed: false },
+  { previous: 65536, next: 65536, changed: false },
+])(
+  "reviews output-limit-only updates from $previous to $next",
+  async ({ previous, next, changed }) => {
+    const command = {
+      id: "tools",
+      program: "agent-tools",
+      args: ["list", "--json"],
+    };
+    const manifest = {
+      id: "example.plugin",
+      name: "Example",
+      apiVersion: 1,
+    } as const;
+    const preview: ImportPreview = {
+      token: "preview",
+      source: "/example",
+      commit: null,
+      warnings: [],
+      candidates: [
+        {
+          path: "dist",
+          revision: "two",
+          manifest: {
+            ...manifest,
+            host: {
+              commands: [
+                {
+                  ...command,
+                  ...(next === undefined ? {} : { maxOutputBytes: next }),
+                },
+              ],
+            },
+          },
+        },
+      ],
+    };
+    const catalog: Catalog = {
+      profile: "test",
+      location: "test",
+      plugins: [
+        {
+          manifest: {
+            ...manifest,
+            host: {
+              commands: [
+                {
+                  ...command,
+                  ...(previous === undefined
+                    ? {}
+                    : { maxOutputBytes: previous }),
+                },
+              ],
+            },
+          },
+          source: "external",
+          enabled: true,
+          revision: "one",
+          previous: null,
+          reloadable: false,
+          error: null,
+        },
+      ],
+    };
+    const manager = {
+      imports: {
+        folder: vi.fn(async () => preview),
+        discard: vi.fn(async () => {}),
+      },
+      installImport: vi.fn(),
+    } as unknown as PluginManager;
+    render(<PluginImport plugins={manager} catalog={catalog} busy={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Load from folder" }));
+    const access = within(
+      await screen.findByRole("region", { name: "Declared host access" }),
+    );
+    const grant = access.getByRole("listitem");
+    expect(grant).toHaveTextContent(`output: up to ${next ?? 4096} bytes`);
+    if (changed) {
+      expect(grant).toHaveTextContent("(new or changed)");
+      expect(access.getByText(/^Removed:/)).toHaveTextContent(
+        `output: up to ${previous ?? 4096} bytes`,
+      );
+    } else {
+      expect(grant).not.toHaveTextContent("(new or changed)");
+      expect(access.queryByText(/^Removed:/)).not.toBeInTheDocument();
+    }
+    expect(manager.installImport).not.toHaveBeenCalled();
+  },
+);
 
 it("signs in only to repositories the community authorizes", async () => {
   const preview: ImportPreview = {

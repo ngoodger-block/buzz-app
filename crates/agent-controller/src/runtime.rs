@@ -29,6 +29,14 @@ impl RuntimeBundle {
     ) -> Result<Command> {
         agent.validate()?;
         let harness = defaults.resolve(&agent.harness, &agent.environment);
+        if let Some(preset) = crate::harness_preset(&harness.command) {
+            if !harness.model.is_empty() || !harness.provider.is_empty() {
+                return Err(format!(
+                    "Use {} defaults in the agent editor before starting this agent",
+                    preset.label
+                ));
+            }
+        }
         if key.pubkey() != agent.pubkey {
             return Err("Credential does not match the saved agent".into());
         }

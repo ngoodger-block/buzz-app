@@ -276,7 +276,7 @@ it.each([false, true])(
   },
 );
 
-it("announces queued, preparation, upload and readiness politely while editor focus stays put", async () => {
+it("announces queued files, then background preparation and upload, while editor focus stays put", async () => {
   const h = await fixture();
   const header = deferred<ArrayBuffer>();
   const upload = deferred<typeof h.uploaded>();
@@ -308,23 +308,20 @@ it("announces queued, preparation, upload and readiness politely while editor fo
   expect(h.upload).not.toHaveBeenCalled();
 
   fireEvent.click(send);
-  await waitFor(() =>
-    expect(status).toHaveTextContent("notes.txt: 1 KB · Preparing…"),
-  );
+  // The file leaves the composer; the background pill announces its phases.
+  await waitFor(() => expect(status).not.toBeInTheDocument());
+  expect(screen.getByRole("status")).toHaveTextContent("Preparing");
   expect(editor).toHaveFocus();
-  expect(send).toBeDisabled();
   await act(async () => {
     header.resolve(new ArrayBuffer(0));
   });
-  expect(status).toHaveTextContent("notes.txt: 1 KB · Uploading…");
+  expect(screen.getByRole("status")).toHaveTextContent("Uploading 0%");
   expect(editor).toHaveFocus();
-  expect(send).toBeDisabled();
   await act(async () => {
     upload.resolve(h.uploaded);
   });
   await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
   expect(editor).toHaveFocus();
-  expect(screen.queryAllByRole("status")).toHaveLength(0);
   expect(
     screen.queryByRole("region", { name: "Attachments" }),
   ).not.toBeInTheDocument();

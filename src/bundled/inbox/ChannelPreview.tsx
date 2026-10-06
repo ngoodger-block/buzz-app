@@ -32,7 +32,7 @@ export function ChannelPreview({
   exactActions?: ReactNode;
   anchor?: string | undefined;
   draft?: boolean;
-  onDraftSaved?: (id: string) => void;
+  onDraftSaved?: () => void;
   onClose?: () => void;
 }) {
   const window = useChannelWindow(session.channels, channelId);

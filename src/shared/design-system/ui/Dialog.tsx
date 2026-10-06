@@ -38,8 +38,8 @@ export type DialogProps = {
   height?: "content" | "stable";
   /** Let bounded content own its scrolling instead of the shared body. */
   bodyLayout?: "flow" | "flex";
-  /** Expanded reading surfaces retain the same modal/focus behavior. */
-  size?: "default" | "expanded";
+  /** Wide catalogs and expanded reading surfaces retain the same modal/focus behavior. */
+  size?: "default" | "wide" | "expanded";
   /** Keep frequent surfaces such as search palettes immediate. */
   motion?: "default" | "none";
   /** A pending operation can prevent all user dismissal paths. */

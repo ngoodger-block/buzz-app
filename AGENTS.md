@@ -41,6 +41,12 @@ callers, and relevant design docs; preserve documented product decisions and
 ownership boundaries. Resolve answerable questions from evidence; ask before
 deviating from agreed scope or product behavior.
 
+For cross-host changes, follow [shared logic and host boundaries](docs/contributing.md#shared-logic-and-host-boundaries).
+Name the existing feature owner/current callers, preserved behavior or approved
+host differences, and which host the validation actually exercises. Keep shared
+contracts executable in the existing tests; frontend checks do not replace host
+signing or IPC enforcement.
+
 Agent selection must consume `session.agentChoices`, not independently reconstruct
 native/legacy inventories. Keep usable partial choices distinct from complete
 inference evidence; preserve each action's membership/archive policy. See

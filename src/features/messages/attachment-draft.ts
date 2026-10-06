@@ -14,10 +14,11 @@ export type DraftAttachment = Readonly<{
   uploaded?: UploadedAttachment;
   error?: string | undefined;
 }>;
-type AttachmentDraft = {
+export type AttachmentDraft = {
   snapshot(): readonly DraftAttachment[];
   subscribe(listener: () => void): () => void;
   add(files: readonly File[]): void;
+  adopt(files: readonly DraftAttachment[]): boolean;
   prepareForSend(signal: AbortSignal): Promise<readonly UploadedAttachment[]>;
   remove(id: string): void;
   retry(id: string): void;
@@ -29,7 +30,7 @@ const MAX_FILES = 10;
 const MAX_RETAINED_BYTES = 2 * UPLOAD_MAX_BYTES;
 
 /** Tab-local files survive navigation, not reload. Delivery remains outbox-owned. */
-function attachmentDraft(
+export function attachmentDraft(
   session: RelaySession,
   key: string,
   channelId: string,
@@ -180,6 +181,14 @@ function attachmentDraft(
       ];
       owners.set(key, store);
       emit();
+    },
+    /** Moves already admitted files, with their results and errors, into an empty draft. */
+    adopt(files: readonly DraftAttachment[]) {
+      if (items.length || !files.length) return false;
+      items = files;
+      owners.set(key, store);
+      emit();
+      return true;
     },
     async prepareForSend(signal: AbortSignal) {
       if (!items.length) return [];

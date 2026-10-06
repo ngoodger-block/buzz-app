@@ -90,3 +90,22 @@ export async function chooseColorMode(page, name) {
   await page.locator("label").filter({ has: choice }).click();
   await expect(choice).toBeChecked();
 }
+
+// Secondary panels enter with a short horizontal transform. Positions compared
+// across separate reads must wait for that motion: each read sees a different
+// offset, so a fixed gap between two controls can appear to overlap.
+export async function settlePanelMotion(page) {
+  await page.locator("[data-panel-dock]").evaluateAll((docks) =>
+    Promise.allSettled(
+      docks.flatMap((dock) =>
+        dock
+          .getAnimations({ subtree: true })
+          .filter(
+            (animation) =>
+              animation.effect?.getComputedTiming().endTime !== Infinity,
+          )
+          .map((animation) => animation.finished),
+      ),
+    ),
+  );
+}

@@ -519,6 +519,9 @@ scrolls horizontally from a safe start edge so both ends remain reachable.
 inline layer (such as an inspector) before dismissing the dialog. Nested modal
 layers still use Dialog so Base UI owns their focus trap and dismissal order;
 `placement="right"` and explicit `dismissOnOutsideClick` suit inspector sheets.
+Use `size="wide"` for two-column catalogs such as Add harness. It caps the width
+at 56rem and preserves viewport gutters; `height="stable"` can reserve the body
+while changing catalog selection.
 Use `size="expanded"` for viewport-filling reading surfaces such as code diffs;
 the body scrolls while the shared title and close action remain available. This
 changes only size, not modal ownership or dismissal behavior.

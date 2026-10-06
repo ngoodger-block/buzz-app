@@ -2081,56 +2081,47 @@ async fn preference_batches_reject_invalid_ciphertext_after_signature_verificati
 }
 
 #[test]
-fn canvas_signing_bounds_revision_preconditions_and_allows_exact_legacy_retries() {
-    let channel = vec![
-        "h".to_string(),
-        "11111111-1111-4111-8111-111111111111".to_string(),
-    ];
-    let event = |tags| EventTemplate {
+fn canvas_signing_shape_matches_broker_contract() {
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../src/features/channel-templates/canvas-signing-contract.json"
+    ))
+    .unwrap();
+    for case in cases.as_array().unwrap() {
+        // Tag shape plus EventTemplate deserialization, not IPC wiring, broker
+        // freshness, the native signing budget or publication.
+        let event = serde_json::from_value::<EventTemplate>(serde_json::json!({
+            "kind": 40100, "created_at": 100, "content": "# Plan", "tags": case["tags"]
+        }));
+        let accepted = if case["deserializes"] == false {
+            assert!(event.is_err(), "{}", case["name"]);
+            false
+        } else {
+            let event = event.unwrap_or_else(|error| panic!("{}: {error}", case["name"]));
+            validate_event("https://relay.test", &event).is_ok()
+        };
+        assert_eq!(
+            accepted,
+            case["accepted"].as_bool().unwrap(),
+            "{}",
+            case["name"]
+        );
+    }
+}
+
+#[test]
+fn canvas_content_is_bounded_in_utf8_bytes() {
+    let mut event = EventTemplate {
         kind: 40100,
-        content: "# Plan".into(),
         created_at: 100,
-        tags,
+        content: "é".repeat(12 * 1024),
+        tags: vec![vec![
+            "h".into(),
+            "11111111-1111-4111-8111-111111111111".into(),
+        ]],
     };
-    assert!(validate_event("https://relay.test", &event(vec![channel.clone()])).is_ok());
-    for revision in ["none".to_string(), "a".repeat(64)] {
-        assert!(validate_event(
-            "https://relay.test",
-            &event(vec![
-                channel.clone(),
-                vec!["expected-revision".into(), revision]
-            ])
-        )
-        .is_ok());
-    }
-    for tags in [
-        vec![],
-        vec![channel.clone(), channel.clone()],
-        vec![channel.clone(), vec!["p".into(), "a".repeat(64)]],
-        vec![
-            channel.clone(),
-            vec!["expected-revision".into(), "bad".into()],
-        ],
-        vec![
-            channel.clone(),
-            vec!["expected-revision".into(), "A".repeat(64)],
-        ],
-        vec![
-            channel.clone(),
-            vec!["expected-revision".into(), "none".into(), "extra".into()],
-        ],
-        vec![
-            channel.clone(),
-            vec!["expected-revision".into(), "none".into()],
-            vec!["expected-revision".into(), "none".into()],
-        ],
-        vec![channel.clone(), vec![]],
-    ] {
-        assert!(validate_event("https://relay.test", &event(tags)).is_err());
-    }
-    let mut too_large = event(vec![channel]);
-    too_large.content = "é".repeat(13 * 1024);
-    assert!(validate_event("https://relay.test", &too_large).is_err());
+    assert!(validate_event("https://relay.test", &event).is_ok());
+    event.content.push('x');
+    assert!(validate_event("https://relay.test", &event).is_err());
 }
 
 #[test]

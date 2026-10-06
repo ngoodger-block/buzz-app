@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import canvasCases from "../src/features/channel-templates/canvas-signing-contract.json";
 import { keypair, signed } from "../src/features/relay/testing.ts";
 import {
   coordinate,
@@ -141,37 +142,18 @@ it("expands multiple teams and individual agents by exact key without namesake c
   );
 });
 
-it("admits only bounded Canvas writes with one exact channel and no notification or privilege tags", () => {
+// Shape only: the broker additionally checks freshness; Rust also deserializes
+// EventTemplate and bounds the signed serialization. See contributing.md.
+it.each(canvasCases)("Canvas signing shape: $name", ({ accepted, tags }) => {
+  expect(validCanvas({ kind: 40100, content: "# Plan", tags })).toBe(accepted);
+});
+
+it("bounds Canvas content in UTF-8 bytes, not JavaScript characters", () => {
   const canvas = {
     kind: 40100,
-    content: "# Plan",
     tags: [["h", "11111111-1111-4111-8111-111111111111"]],
   };
-  expect(validCanvas(canvas)).toBe(true);
-  for (const revision of ["none", "a".repeat(64)])
-    expect(
-      validCanvas({
-        ...canvas,
-        tags: [...canvas.tags, ["expected-revision", revision]],
-      }),
-    ).toBe(true);
-  for (const tags of [
-    [...canvas.tags, ["expected-revision", "bad"]],
-    [...canvas.tags, ["expected-revision", "A".repeat(64)]],
-    [...canvas.tags, ["expected-revision", "none", "extra"]],
-    [
-      ...canvas.tags,
-      ["expected-revision", "none"],
-      ["expected-revision", "none"],
-    ],
-    [...canvas.tags, null],
-    [],
-    [...canvas.tags, ...canvas.tags],
-    [...canvas.tags, ["p", owner.pubkey]],
-    [["h", "invalid"]],
-  ])
-    expect(validCanvas({ ...canvas, tags })).toBe(false);
-  expect(validCanvas({ ...canvas, content: "é".repeat(13 * 1024) })).toBe(
-    false,
-  );
+  const content = "é".repeat(12 * 1024);
+  expect(validCanvas({ ...canvas, content })).toBe(true);
+  expect(validCanvas({ ...canvas, content: `${content}x` })).toBe(false);
 });

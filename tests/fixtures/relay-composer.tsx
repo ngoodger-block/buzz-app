@@ -91,13 +91,22 @@ const owner = createRelaySession(
         return [
           roster(relay, "general", [viewer.pubkey]),
           metadata(relay, "general", "General"),
+          ...(params.has("random")
+            ? [
+                roster(relay, "random", [viewer.pubkey]),
+                metadata(relay, "random", "Random"),
+              ]
+            : []),
         ];
       if (filter.kinds?.includes(0)) return [profile(viewer, { name: "You" })];
       if (filter.ids)
         return confirmed.filter((event) => filter.ids?.includes(event.id));
+      const channel = filter["#h"]?.[0] ?? "general";
       return [
-        ...confirmed,
-        bounds(relay, "general", "head", {
+        ...confirmed.filter((event) =>
+          event.tags.some((tag) => tag[0] === "h" && tag[1] === channel),
+        ),
+        bounds(relay, channel, "head", {
           has_more: false,
           next_cursor: null,
         }),
@@ -139,6 +148,11 @@ Object.assign(window, {
         kind: item.event.kind,
         content: item.event.content,
         delivery: item.delivery,
+      })),
+    published: () =>
+      confirmed.map((event) => ({
+        content: event.content,
+        channel: event.tags.find((tag) => tag[0] === "h")?.[1],
       })),
   },
 });

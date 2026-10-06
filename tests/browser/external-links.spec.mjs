@@ -1,5 +1,5 @@
 import { expectTabler } from "./tabler.mjs";
-import { openPage } from "./navigation.mjs";
+import { openPage, settlePanelMotion } from "./navigation.mjs";
 import { test, expect } from "./fixture.mjs";
 import { end, settle } from "./timeline.mjs";
 import { apcaContrast, wcagRatio } from "../../scripts/design-system/apca.mjs";
@@ -143,6 +143,7 @@ test("GitHub API errors offer prominent external opening before retry", async ({
   const retry = alert.getByRole("button", { name: "Retry", exact: true });
   await expect(external).toHaveAttribute("data-variant", "prominent");
   await expect(retry).toHaveAttribute("data-variant", "subtle");
+  await settlePanelMotion(page);
   const externalBox = await external.boundingBox();
   const retryBox = await retry.boundingBox();
   expect(externalBox).not.toBeNull();

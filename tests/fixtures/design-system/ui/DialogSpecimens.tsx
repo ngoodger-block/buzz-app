@@ -24,6 +24,7 @@ function Example({
   informational = false,
   height,
   bodyLayout,
+  size,
   children,
 }: {
   label: string;
@@ -35,6 +36,7 @@ function Example({
   informational?: boolean;
   height?: "content" | "stable";
   bodyLayout?: "flow" | "flex";
+  size?: "default" | "wide" | "expanded";
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -58,7 +60,7 @@ const id = useId();
 <Dialog
   open={open}
   onOpenChange={setOpen}
-  title=${JSON.stringify(title)}${height ? `\n  height="${height}"` : ""}${bodyLayout ? `\n  bodyLayout="${bodyLayout}"` : ""}${intro ? `\n  description=${JSON.stringify(intro)}` : ""}
+  title=${JSON.stringify(title)}${size ? `\n  size="${size}"` : ""}${height ? `\n  height="${height}"` : ""}${bodyLayout ? `\n  bodyLayout="${bodyLayout}"` : ""}${intro ? `\n  description=${JSON.stringify(intro)}` : ""}
   actions={${
     informational
       ? '<Button variant="prominent" onClick={() => setOpen(false)}>Done</Button>'
@@ -79,6 +81,7 @@ ${informational ? "" : `  <form id={id} className="space-y-section-gap" onSubmit
         open={open}
         onOpenChange={setOpen}
         title={title}
+        {...(size ? { size } : {})}
         {...(height ? { height } : {})}
         {...(bodyLayout ? { bodyLayout } : {})}
         {...(intro ? { description: intro } : {})}
@@ -119,6 +122,25 @@ ${informational ? "" : `  <form id={id} className="space-y-section-gap" onSubmit
 export function DialogSpecimens() {
   return (
     <div className="component-specimen-stack">
+      <Example
+        label="Wide catalog"
+        description="A bounded wide surface for a sidebar and setup details."
+        title="Add harness"
+        size="wide"
+        height="stable"
+        informational
+        code={`<div className="grid grid-cols-[12rem_1fr] gap-6">
+  <p className="text-label">Harnesses</p>
+  <p className="text-body">Choose a harness to see its setup details.</p>
+</div>`}
+      >
+        <div className="grid gap-6 sm:grid-cols-[12rem_1fr]">
+          <p className="text-label">Harnesses</p>
+          <p className="text-body">
+            Choose a harness to see its setup details.
+          </p>
+        </div>
+      </Example>
       <Example
         label="Simple message"
         description="A short message and a single action when no input is needed."

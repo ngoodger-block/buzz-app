@@ -1,0 +1,10 @@
+[
+  {
+    "id": "hermes",
+    "label": "Hermes Agent",
+    "command": "hermes-acp",
+    "args": [],
+    "setupUrl": "https://hermes-agent.nousresearch.com/docs/user-guide/features/acp/",
+    "setupHint": "Install Hermes with ACP support and configure it with `hermes model`. Store provider API keys in `~/.hermes/.env`; Buzz doesn’t inherit shell exports. Verify with `hermes acp --check`."
+  }
+]

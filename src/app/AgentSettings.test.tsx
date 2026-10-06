@@ -123,6 +123,14 @@ function setupHarnesses(
         : {}),
       providers: [],
     },
+    {
+      command: "hermes-acp",
+      label: "Hermes Agent",
+      available: false,
+      status: "cli-needed",
+      installSupported: false,
+      providers: [],
+    },
   ];
   const control = createAgentControl(fixture.host);
   disposals.push(() => control.dispose());
@@ -131,7 +139,7 @@ function setupHarnesses(
 }
 
 it.each(["cli-needed", "adapter-needed", "ready"] as const)(
-  "shows the three Harnesses and keeps manual Pi commands collapsed until requested (%s)",
+  "shows Harnesses and keeps manual Pi commands collapsed until requested (%s)",
   async (piStatus) => {
     const user = userEvent.setup();
     setupHarnesses(piStatus);
@@ -193,10 +201,108 @@ it.each(["cli-needed", "adapter-needed", "ready"] as const)(
     }
     await user.hover(screen.getByRole("button", { name: "About ACP" }));
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
-      "Buzz talks to harnesses through the Agent Client Protocol (ACP). Goose ships with Buzz and supports ACP natively. Pi needs a small adapter, `buzz-pi-acp`. Your existing CLI setup and sign-in are left untouched.",
+      "Hermes Agent uses its own ACP launcher and sign-in.",
     );
   },
 );
+
+it("discovers Tier 2 Hermes through Add harness and follows installation changes", async () => {
+  const user = userEvent.setup();
+  const { fixture } = setupHarnesses("ready");
+  const list = await screen.findByRole("list", { name: "Harnesses" });
+  expect(within(list).queryByText("Hermes Agent")).not.toBeInTheDocument();
+  const add = screen.getByRole("button", { name: "Add harness" });
+  await user.click(add);
+  const dialog = await screen.findByRole("dialog", { name: "Add harness" });
+  expect(within(dialog).getByText("CLI needed")).toBeVisible();
+  expect(
+    within(dialog).queryByRole("button", { name: /Install|Update/ }),
+  ).toBeNull();
+  expect(
+    within(dialog).getByRole("link", { name: "Hermes Agent setup guide" }),
+  ).toHaveAttribute(
+    "href",
+    "https://hermes-agent.nousresearch.com/docs/user-guide/features/acp/",
+  );
+  await user.click(within(dialog).getByText("Terminal setup"));
+  expect(within(dialog).getByText("hermes model")).toBeVisible();
+  expect(within(dialog).getByText("hermes acp --check")).toBeVisible();
+  const hermes = fixture.data.harnessOptions?.find(
+    (option) => option.label === "Hermes Agent",
+  );
+  if (!hermes) throw new Error("Missing Hermes option");
+  Object.assign(hermes, {
+    command: "/local/hermes-acp",
+    available: true,
+    status: "ready",
+  });
+  await user.click(within(dialog).getByRole("button", { name: "Check again" }));
+  await waitFor(() => expect(within(dialog).getByText("Ready")).toBeVisible());
+  expect(within(dialog).getByText("/local/hermes-acp")).toBeVisible();
+  await user.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  await waitFor(() => expect(add).toHaveFocus());
+  expect(
+    within(list).getByText("Hermes Agent").closest("li"),
+  ).toHaveTextContent("Ready");
+  Object.assign(hermes, {
+    command: "hermes-acp",
+    available: false,
+    status: "cli-needed",
+  });
+  await user.click(screen.getByRole("button", { name: "Check again" }));
+  await waitFor(() =>
+    expect(within(list).queryByText("Hermes Agent")).not.toBeInTheDocument(),
+  );
+  await user.click(add);
+  expect(
+    within(await screen.findByRole("dialog")).getByText("CLI needed"),
+  ).toBeVisible();
+});
+
+it("keeps Tier 1 harnesses usable when an older desktop has no Hermes option", async () => {
+  const user = userEvent.setup();
+  const { fixture, control } = setupHarnesses("ready");
+  fixture.data.harnessOptions = (fixture.data.harnessOptions ?? []).filter(
+    (option) => option.label !== "Hermes Agent",
+  );
+  await act(() => control.refresh());
+  const list = await screen.findByRole("list", { name: "Harnesses" });
+  expect(within(list).getByText("Goose")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Add harness" }));
+  expect(
+    await screen.findByRole("dialog", { name: "Add harness" }),
+  ).toHaveTextContent("Update the desktop app to check Hermes Agent.");
+});
+
+it("recognizes harness commands independently of native display labels", async () => {
+  const { fixture, control } = setupHarnesses("ready");
+  for (const option of fixture.data.harnessOptions ?? []) {
+    option.label = `Renamed ${option.label}`;
+  }
+  await act(() => control.refresh());
+  const list = await screen.findByRole("list", { name: "Harnesses" });
+  expect(within(list).getByText("Renamed Goose")).toBeVisible();
+  expect(
+    within(list).queryByText("Renamed Hermes Agent"),
+  ).not.toBeInTheDocument();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Add harness" }));
+  const dialog = await screen.findByRole("dialog", { name: "Add harness" });
+  expect(
+    within(dialog).getByRole("heading", { name: "Renamed Hermes Agent" }),
+  ).toBeVisible();
+  expect(
+    within(dialog).getByRole("link", {
+      name: "Renamed Hermes Agent setup guide",
+    }),
+  ).toHaveAttribute(
+    "href",
+    "https://hermes-agent.nousresearch.com/docs/user-guide/features/acp/",
+  );
+});
 
 it("offers manual copying when clipboard access fails", async () => {
   const user = userEvent.setup();
@@ -261,7 +367,10 @@ it("keeps the last statuses and offers Check again after a failed read", async (
     installSupported: true,
     installPi,
   });
-  expect(await screen.findByText("CLI needed")).toBeVisible();
+  const list = await screen.findByRole("list", { name: "Harnesses" });
+  const piRow = within(list).getByText("Pi", { exact: true }).closest("li");
+  if (!piRow) throw new Error("Missing Pi row");
+  expect(within(piRow).getByText("CLI needed")).toBeVisible();
   const original = fixture.host.snapshot.bind(fixture.host);
   fixture.host.snapshot = vi
     .fn()

@@ -152,6 +152,11 @@ export function createReadState({
       emit();
     }
   };
+  /**
+   * Checked inside the storage transaction with the journal it will replace,
+   * so a fence on local intent sees other windows' saves, not this cache.
+   */
+  type Validity = (current: ReadJournal) => boolean;
   function queue<T>(job: () => Promise<T>): Promise<T> {
     const next = work.then(job);
     work = next.catch(() => {});
@@ -352,7 +357,7 @@ export function createReadState({
     key: string,
     timestamp: number | undefined,
     unread: boolean | undefined,
-    valid: () => boolean,
+    valid: Validity,
     clearLocalKeys: readonly string[] = [key],
   ): Promise<ReadMutationResult> {
     return queue(async () => {
@@ -363,7 +368,7 @@ export function createReadState({
         throw new Error("Read-state sync unsupported by this host");
       try {
         const saved = await save((current) => {
-          if (!valid()) throw new Error("Reading observation expired");
+          if (!valid(current)) throw new Error("Reading observation expired");
           if (
             !contextId(key) ||
             (timestamp !== undefined && !uint32(timestamp))
@@ -597,7 +602,7 @@ export function createReadState({
     read: (
       key: string,
       timestamp: number,
-      valid: () => boolean,
+      valid: Validity,
       explicit = false,
       clearLocalKeys?: readonly string[],
     ) =>
@@ -608,11 +613,8 @@ export function createReadState({
         valid,
         clearLocalKeys,
       ),
-    clearLocalUnread: (
-      key: string,
-      keys: readonly string[],
-      valid: () => boolean,
-    ) => mutate(key, undefined, false, valid, keys),
+    clearLocalUnread: (key: string, keys: readonly string[], valid: Validity) =>
+      mutate(key, undefined, false, valid, keys),
     /** Atomic explicit subtree read; local-only hosts clear intent without fabricating frontiers. */
     readMessages: (
       messages: readonly Readonly<{
@@ -622,7 +624,7 @@ export function createReadState({
         rootId?: string | undefined;
       }>[],
       clearForce: string | undefined,
-      valid: () => boolean,
+      valid: Validity,
     ) =>
       queue(async () => {
         await ready;
@@ -630,7 +632,7 @@ export function createReadState({
           throw new Error("Saved read state unavailable; retry storage first");
         try {
           const saved = await save((current) => {
-            if (!valid()) throw new Error("Reading observation expired");
+            if (!valid(current)) throw new Error("Reading observation expired");
             if (
               messages.some(
                 ({ key, timestamp }) => !contextId(key) || !uint32(timestamp),

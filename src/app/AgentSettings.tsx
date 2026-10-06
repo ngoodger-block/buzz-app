@@ -1,5 +1,11 @@
 import { SettingsGroup } from "../shared/design-system/ui/SettingsGroup";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  harnessPresets,
+  harnessKind,
+  harnessPreset,
+} from "../features/agents/harness-presets";
+import { PresetSetupHint } from "../features/agents/PresetSetupHint";
 import type { AgentControl } from "../features/agents/control";
 import {
   setRememberAgentsPreference,
@@ -7,11 +13,19 @@ import {
 } from "../features/messages/mention-preferences";
 import {
   ArrowsClockwiseIcon,
+  ArrowSquareOutIcon,
   CopyIcon,
+  GooseLogoIcon,
+  PiLogoIcon,
+  PlusIcon,
   QuestionIcon,
+  RobotIcon,
+  TerminalWindowIcon,
 } from "../shared/design-system/icons";
 import { Header, InlineHeader } from "../shared/design-system/ui/Header";
 import { Button } from "../shared/design-system/ui/Button";
+import { Dialog } from "../shared/design-system/ui/Dialog";
+import { NavigationItem } from "../shared/design-system/ui/NavigationItem";
 import { IconButton } from "../shared/design-system/ui/IconButton";
 import { PreferenceRow } from "../shared/design-system/ui/PreferenceRow";
 import { SwitchPreferenceRow } from "../shared/design-system/ui/SwitchPreferenceRow";
@@ -22,7 +36,7 @@ import { AgentDefaultsCard } from "./AgentDefaultsCard";
 import styles from "./AgentSettings.module.css";
 
 const acpHint =
-  "Buzz talks to harnesses through the Agent Client Protocol (ACP). Goose ships with Buzz and supports ACP natively. Pi needs a small adapter, `buzz-pi-acp`. Your existing CLI setup and sign-in are left untouched.";
+  "Buzz talks to harnesses through the Agent Client Protocol (ACP). Goose ships with Buzz. Pi needs the buzz-pi-acp adapter. Hermes Agent uses its own ACP launcher and sign-in.";
 const piCommand = "npm install -g '@earendil-works/pi-coding-agent@>=0.99.0'";
 const adapterCommand =
   "npm install -g --install-links=true 'git+https://github.com/salman1993/buzz-pi-acp.git#72015de'";
@@ -31,6 +45,12 @@ const labels = {
   "cli-needed": "CLI needed",
   "adapter-needed": "Adapter needed",
 } as const;
+// Artwork only; native harnessOptions still own availability and configuration.
+const harnessIcons: Record<string, ReactNode> = {
+  "buzz-agent": <RobotIcon size={32} className="shrink-0" />,
+  goose: <GooseLogoIcon size={32} className="shrink-0" />,
+  pi: <PiLogoIcon size={32} className="shrink-0" />,
+};
 const commands = [
   ["Pi", "Install Pi", piCommand],
   ["Adapter", "Install the ACP adapter", adapterCommand],
@@ -48,6 +68,9 @@ export function AgentSettings({
   const preference = useRememberAgentsPreference();
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const [selectedPresetId, setSelectedPresetId] = useState<string>();
+  const addHarnessRef = useRef<HTMLButtonElement>(null);
   const [copyMessage, setCopyMessage] = useState("");
   const copyAttempt = useRef(0);
   const state = useSyncExternalStore(control.subscribe, control.snapshot);
@@ -60,11 +83,31 @@ export function AgentSettings({
     if (active) void control.refresh();
   }, [active, control]);
   const options = state.data?.harnessOptions;
-  const harnesses = (["Buzz Agent", "Goose", "Pi"] as const).map((name) =>
-    options?.find((option) => option.label === name),
+  const coreHarnesses = (["buzz-agent", "goose", "pi"] as const).map((id) =>
+    options?.find((option) => harnessKind(option.command) === id),
   );
-  const available = harnesses.every((option) => !!option?.status);
-  const pi = harnesses[2];
+  const available = coreHarnesses.every((option) => !!option?.status);
+  const pi = coreHarnesses[2];
+  const presets =
+    options?.filter((option) => !!harnessPreset(option.command)) ?? [];
+  const harnesses = [
+    ...coreHarnesses,
+    ...presets.filter((option) => option.available),
+  ];
+  const setup =
+    harnessPresets.find((preset) => preset.id === selectedPresetId) ??
+    harnessPresets[0];
+  // Native owns availability; registry metadata also works on older snapshots.
+  const selected = options?.find(
+    (option) => harnessPreset(option.command) === setup,
+  );
+  const presetLabel = selected?.label ?? setup?.label ?? "Harness";
+  const checkDisabled =
+    state.status === "unavailable" || state.busy || installingPi;
+  const checkAgain = () => {
+    setChecking(true);
+    void control.refresh().finally(() => setChecking(false));
+  };
   const change = (enabled: boolean) =>
     setError(setRememberAgentsPreference(enabled));
   const copy = async (name: string, command: string) => {
@@ -102,14 +145,9 @@ export function AgentSettings({
                   variant="ghost"
                   aria-label="Check again"
                   icon={<ArrowsClockwiseIcon aria-hidden="true" />}
-                  disabled={
-                    state.status === "unavailable" || state.busy || installingPi
-                  }
+                  disabled={checkDisabled}
                   loading={checking}
-                  onClick={() => {
-                    setChecking(true);
-                    void control.refresh().finally(() => setChecking(false));
-                  }}
+                  onClick={checkAgain}
                 />
               </Tooltip>
             </>
@@ -145,12 +183,22 @@ export function AgentSettings({
                 {harnesses.map((option) => (
                   <li key={option?.label} className="py-3 text-body-sm">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span>{option?.label}</span>
+                      <span className="flex items-center gap-3">
+                        {option &&
+                          (harnessIcons[harnessKind(option.command) ?? ""] ?? (
+                            <TerminalWindowIcon
+                              size={32}
+                              className="shrink-0"
+                            />
+                          ))}
+                        <span>{option?.label}</span>
+                      </span>
                       <span className="flex items-center gap-2">
                         <span className="text-secondary">
                           {option?.status ? labels[option.status] : "Unknown"}
                         </span>
-                        {option?.label === "Pi" &&
+                        {option &&
+                          harnessKind(option.command) === "pi" &&
                           (option.status !== "ready" ||
                             option.updateSupported) &&
                           option.installSupported &&
@@ -176,7 +224,28 @@ export function AgentSettings({
                           )}
                       </span>
                     </div>
-                    {option?.label === "Pi" &&
+                    {option && harnessPreset(option.command) && (
+                      <div
+                        className={`${styles.piSetup} space-y-3 text-body-sm`}
+                      >
+                        <p className="m-0 text-secondary">
+                          Uses the default model and credentials configured in{" "}
+                          {option.label}. Install and update the harness
+                          yourself, then use Check again.
+                        </p>
+                        <details>
+                          <summary>Manual {option.label} setup</summary>
+                          <div className="mt-3">
+                            <PresetSetup
+                              label={option.label}
+                              setup={harnessPreset(option.command)}
+                            />
+                          </div>
+                        </details>
+                      </div>
+                    )}
+                    {option &&
+                      harnessKind(option.command) === "pi" &&
                       (installingPi ||
                         piResult?.ready ||
                         piResult?.error ||
@@ -294,10 +363,130 @@ export function AgentSettings({
                   </li>
                 ))}
               </ul>
+              <Button
+                ref={addHarnessRef}
+                variant="outline"
+                size="sm"
+                onClick={() => setCatalogOpen(true)}
+              >
+                <PlusIcon size={16} aria-hidden="true" />
+                Add harness
+              </Button>
             </>
           )}
         </SettingsGroup>
       </section>
+      <Dialog
+        open={catalogOpen && active}
+        onOpenChange={setCatalogOpen}
+        title="Add harness"
+        size="wide"
+        height="stable"
+        finalFocus={addHarnessRef}
+        dismissOnOutsideClick
+        headerActions={
+          <Tooltip content="Check again">
+            <IconButton
+              aria-label="Check again"
+              disabled={checkDisabled || checking}
+              onClick={checkAgain}
+              size="compact"
+              icon={<ArrowsClockwiseIcon size={16} aria-hidden="true" />}
+            />
+          </Tooltip>
+        }
+        actions={
+          setup && (
+            <Button
+              variant="prominent"
+              nativeButton={false}
+              role="link"
+              aria-label={`${presetLabel} setup guide`}
+              render={
+                <a href={setup.setupUrl} target="_blank" rel="noreferrer" />
+              }
+            >
+              <ArrowSquareOutIcon size={18} aria-hidden="true" />
+              Setup guide
+            </Button>
+          )
+        }
+      >
+        <div className={styles.catalog}>
+          <nav
+            aria-label="Additional harnesses"
+            className={styles.catalogSidebar}
+          >
+            <p className="text-label text-secondary">
+              {selected?.available ? "Installed" : "Setup"}
+            </p>
+            {harnessPresets.map((preset) => (
+              <NavigationItem
+                key={preset.id}
+                label={
+                  options?.find(
+                    (option) => harnessPreset(option.command) === preset,
+                  )?.label ?? preset.label
+                }
+                selected={preset === setup}
+                onClick={() => setSelectedPresetId(preset.id)}
+                icon={<TerminalWindowIcon size={24} aria-hidden="true" />}
+              />
+            ))}
+          </nav>
+          <section
+            aria-labelledby="preset-catalog-title"
+            className={`${styles.catalogDetails} space-y-6`}
+          >
+            <div className="flex items-center gap-3">
+              <TerminalWindowIcon size={48} className="shrink-0" />
+              <div>
+                <h3 id="preset-catalog-title" className="text-heading">
+                  {presetLabel}
+                </h3>
+                <p className="m-0 text-body-sm text-secondary">
+                  {selected?.status ? labels[selected.status] : "Unknown"}
+                </p>
+              </div>
+            </div>
+            {state.status === "error" && (
+              <p role="alert" className="text-body-sm">
+                Couldn’t confirm harnesses. Showing the last check; try Check
+                again.
+              </p>
+            )}
+            {!selected && (
+              <p role="status" className="text-body-sm">
+                Update the desktop app to check {presetLabel}.
+              </p>
+            )}
+            <p className="text-body-sm text-secondary">
+              Model and sign-in are managed in {presetLabel}.
+            </p>
+            <div className="space-y-3 text-body-sm">
+              <h4 className="text-label">Setup</h4>
+              <p>
+                Install {presetLabel} with ACP support, then follow the setup
+                guide to connect it to Buzz.
+              </p>
+              <details>
+                <summary>Terminal setup</summary>
+                <p className="mt-3 text-secondary">
+                  {setup && <PresetSetupHint hint={setup.setupHint} />}
+                </p>
+              </details>
+            </div>
+            {selected?.available && (
+              <PreferenceRow
+                title="Executable"
+                subtitle={
+                  <code className={styles.command}>{selected.command}</code>
+                }
+              />
+            )}
+          </section>
+        </div>
+      </Dialog>
       <AgentDefaultsCard control={control} state={state} />
       {archive}
       <div className="mt-section-gap">
@@ -319,5 +508,33 @@ export function AgentSettings({
         </ToastNotice>
       )}
     </section>
+  );
+}
+
+function PresetSetup({
+  label,
+  setup,
+}: {
+  label: string;
+  setup: { setupUrl: string; setupHint: string } | undefined;
+}) {
+  if (!setup) return null;
+  return (
+    <div className="space-y-3 text-body-sm">
+      <p>
+        Follow the{" "}
+        <a
+          className="underline"
+          href={setup.setupUrl}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {label} setup guide
+        </a>{" "}
+        for installation instructions.{" "}
+        <PresetSetupHint hint={setup.setupHint} />
+      </p>
+      <p>Use Check again to refresh the installation status.</p>
+    </div>
   );
 }

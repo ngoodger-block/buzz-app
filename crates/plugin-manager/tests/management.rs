@@ -110,6 +110,70 @@ fn folder_reload_updates_current_revision_and_preserves_disabled_state() {
         .contains("reloaded"));
 }
 #[test]
+fn folder_reload_compares_effective_output_limits() {
+    for (before, after, allowed) in [
+        (None, Some(4096), true),
+        (Some(4096), None, true),
+        (None, Some(65536), false),
+        (Some(4096), Some(65536), false),
+        (Some(65536), None, false),
+        (Some(65536), Some(4096), false),
+    ] {
+        let (temp, manager, source) = fixture();
+        let write_manifest = |limit: Option<u64>| {
+            let mut manifest = serde_json::json!({
+                "id": "example.page", "name": "Example", "apiVersion": 1,
+                "host": {"commands": [{"id": "tools", "program": "agent-tools", "args": ["list", "--json"]}]}
+            });
+            if let Some(limit) = limit {
+                manifest["host"]["commands"][0]["maxOutputBytes"] = serde_json::json!(limit);
+            }
+            fs::write(source.join("manifest.json"), manifest.to_string()).unwrap();
+        };
+        write_manifest(before);
+        let first = manager
+            .install(&source)
+            .unwrap()
+            .plugins
+            .into_iter()
+            .find(|plugin| plugin.manifest.id == "example.page")
+            .unwrap();
+        write_manifest(after);
+        let result = manager.reload("example.page");
+        if allowed {
+            assert!(
+                result.is_ok(),
+                "{before:?} -> {after:?}: {}",
+                result.err().unwrap()
+            );
+        } else {
+            assert!(result.err().unwrap().contains("Host access changed"));
+        }
+        let reopened = Manager::open(Some(temp.path().into()), "test", false).unwrap();
+        let plugin = reopened
+            .catalog()
+            .unwrap()
+            .plugins
+            .into_iter()
+            .find(|plugin| plugin.manifest.id == "example.page")
+            .unwrap();
+        assert!(!plugin.enabled);
+        assert!(plugin.reloadable);
+        assert_eq!(
+            plugin.manifest.host.as_ref().unwrap().commands[0].max_output_bytes,
+            if allowed { after } else { before }
+        );
+        if allowed {
+            assert_ne!(plugin.revision, first.revision);
+            assert_eq!(plugin.previous.as_deref(), Some(first.revision.as_str()));
+        } else {
+            assert_eq!(plugin.revision, first.revision);
+            assert_eq!(plugin.previous, first.previous);
+        }
+    }
+}
+
+#[test]
 fn reload_rejects_invalid_sources_without_changing_revision() {
     let (temp, manager, source) = fixture();
     let first = manager

@@ -1374,7 +1374,7 @@ it.each([false, true])(
     await user.click(firstRow);
     const current = await screen.findByRole("textbox");
     current.focus();
-    act(() => retired?.("late-accepted"));
+    act(() => retired?.());
     expect(
       screen.getByRole("region", { name: "Draft detail" }),
     ).toBeInTheDocument();

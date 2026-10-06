@@ -137,6 +137,26 @@ fn harnesses_classify_cli_and_adapter_separately() {
 }
 
 #[test]
+fn hermes_is_a_manual_preset_with_presence_based_availability() {
+    let preset = buzz_agent_controller::harness_preset("hermes-acp").unwrap();
+    let missing = preset_option(preset, None);
+    assert!(!missing.available);
+    assert_eq!(missing.status, "cli-needed");
+    assert_eq!(missing.command, "hermes-acp");
+    let path = std::env::temp_dir().join("hermes-acp");
+    let installed = preset_option(preset, Some(path.clone()));
+    assert!(installed.available);
+    assert_eq!(installed.status, "ready");
+    assert_eq!(installed.command, path.to_string_lossy());
+    for option in [missing, installed] {
+        assert_eq!(option.install_supported, Some(false));
+        assert_eq!(option.update_supported, Some(false));
+        assert!(option.default_args.is_empty());
+        assert!(option.providers.is_empty());
+    }
+}
+
+#[test]
 fn managed_pi_detection_prefers_a_complete_user_install_and_requires_managed_node() {
     let path = |name| Some(PathBuf::from(format!("/fixture/{name}")));
     let empty = || PiTools {
@@ -440,7 +460,6 @@ fn real_ipc_snapshot_save_cas_stop_and_launch_gate() {
             "providers": providers
         })
     );
-    assert_eq!(before["harnessOptions"].as_array().unwrap().len(), 3);
     assert_eq!(before["harnessOptions"][2]["label"], "Pi");
     assert_eq!(
         before["harnessOptions"][2]["available"],

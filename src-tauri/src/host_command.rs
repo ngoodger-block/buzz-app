@@ -1,5 +1,7 @@
 use crate::{with_manager, PluginManager};
-use buzzodz_plugins::HostCommand;
+use buzzodz_plugins::{
+    HostCommand, DEFAULT_HOST_COMMAND_OUTPUT_BYTES, MAX_HOST_COMMAND_OUTPUT_BYTES,
+};
 use std::ffi::{OsStr, OsString};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
@@ -147,7 +149,6 @@ pub(crate) mod windows_job {
     }
 }
 
-const MAX_OUTPUT_BYTES: u64 = 4096;
 const DEADLINE: Duration = Duration::from_secs(5);
 
 // Tokio kills only the direct child on future cancellation; the group also owns descendants.
@@ -243,11 +244,18 @@ pub(crate) fn resolve_program(program: &str, effective_path: &OsStr) -> PathBuf 
 
 async fn run_command(command: &HostCommand, deadline: Duration) -> Option<String> {
     let path = effective_path();
+    let max_output_bytes = command
+        .max_output_bytes
+        .unwrap_or(DEFAULT_HOST_COMMAND_OUTPUT_BYTES);
+    if !(1..=MAX_HOST_COMMAND_OUTPUT_BYTES).contains(&max_output_bytes) {
+        return None;
+    }
     run(
         &resolve_program(&command.program, &path),
         &command.args,
         deadline,
         &path,
+        max_output_bytes,
     )
     .await
 }
@@ -257,6 +265,7 @@ async fn run(
     args: &[String],
     deadline: Duration,
     path: &OsStr,
+    max_output_bytes: u64,
 ) -> Option<String> {
     let mut command = Command::new(executable);
     command
@@ -286,11 +295,11 @@ async fn run(
     let output = tokio::time::timeout(deadline, async {
         let mut bytes = Vec::new();
         stdout
-            .take(MAX_OUTPUT_BYTES + 1)
+            .take(max_output_bytes + 1)
             .read_to_end(&mut bytes)
             .await
             .ok()?;
-        if bytes.len() as u64 > MAX_OUTPUT_BYTES {
+        if bytes.len() as u64 > max_output_bytes {
             return None;
         }
         let status = child.wait().await.ok()?;
@@ -330,7 +339,14 @@ mod tests {
     use std::time::{Duration, Instant};
 
     async fn run(executable: &Path, args: &[String], deadline: Duration) -> Option<String> {
-        run_with_path(executable, args, deadline, &effective_path()).await
+        run_with_path(
+            executable,
+            args,
+            deadline,
+            &effective_path(),
+            super::DEFAULT_HOST_COMMAND_OUTPUT_BYTES,
+        )
+        .await
     }
 
     fn executable(script: &str) -> (tempfile::TempDir, PathBuf) {
@@ -339,6 +355,39 @@ mod tests {
         fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         (directory, path)
+    }
+
+    #[tokio::test]
+    async fn larger_output_requires_a_bounded_manifest_opt_in() {
+        let (_directory, path) =
+            executable("/usr/bin/head -c 5000 /dev/zero | /usr/bin/tr '\\000' x");
+        let mut command = super::HostCommand {
+            id: "inventory".into(),
+            program: "env".into(),
+            args: vec![path.to_string_lossy().into_owned()],
+            max_output_bytes: None,
+        };
+        assert_eq!(
+            super::run_command(&command, Duration::from_secs(2)).await,
+            None
+        );
+        command.max_output_bytes = Some(5000);
+        assert_eq!(
+            super::run_command(&command, Duration::from_secs(2)).await,
+            Some("x".repeat(5000))
+        );
+        command.max_output_bytes = Some(4999);
+        assert_eq!(
+            super::run_command(&command, Duration::from_secs(2)).await,
+            None
+        );
+        for limit in [0, super::MAX_HOST_COMMAND_OUTPUT_BYTES + 1] {
+            command.max_output_bytes = Some(limit);
+            assert_eq!(
+                super::run_command(&command, Duration::from_secs(2)).await,
+                None
+            );
+        }
     }
 
     #[tokio::test]
@@ -373,7 +422,14 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert_eq!(super::resolve_program("tool", &path), tool);
         assert_eq!(
-            run_with_path(&tool, &[], Duration::from_secs(5), &path).await,
+            run_with_path(
+                &tool,
+                &[],
+                Duration::from_secs(5),
+                &path,
+                super::DEFAULT_HOST_COMMAND_OUTPUT_BYTES
+            )
+            .await,
             Some("ready\n".into())
         );
     }
@@ -605,6 +661,7 @@ mod windows_tests {
                 ],
                 Duration::from_secs(10),
                 &effective_path(),
+                super::DEFAULT_HOST_COMMAND_OUTPUT_BYTES,
             )
             .await
         });
@@ -631,6 +688,7 @@ mod windows_tests {
                 ],
                 Duration::from_secs(5),
                 &effective_path(),
+                super::DEFAULT_HOST_COMMAND_OUTPUT_BYTES,
             )
             .await
         });

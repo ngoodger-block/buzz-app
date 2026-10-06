@@ -30,3 +30,42 @@ The Emoji Mart picker configuration and search-input focus/correction behavior i
 explicit dictionary cleanup, and lazy loading for the session-owned catalog.
 
 OneDrive is a trademark of Microsoft.
+
+## Harness brand marks
+
+The Goose and Pi marks in `src/shared/design-system/icons/HarnessLogos.tsx`
+are reused from old Buzz to identify their respective harnesses.
+
+Goose: [block/goose](https://github.com/block/goose), revision
+`305849b71709b95b86ed9f11bd3bc939899c0aab`,
+`documentation/static/img/goose.svg`. Apache-2.0 © Block, Inc.; the license is
+preserved in [LICENSE](LICENSE). Old Buzz changed the fill to `currentColor`
+and removed the redundant clipping wrapper. This app adds the shared icon
+sizing, ref and decorative accessibility gateway.
+
+Pi: [earendil-works/pi-website](https://github.com/earendil-works/pi-website),
+revision `2f5e410b97474d0a34ec2500aa1aa58d6c3f992c`, `src/favicon.svg`.
+The artwork is unchanged; this app adds the shared icon sizing, ref and
+decorative accessibility gateway. Its license follows:
+
+MIT License
+
+Copyright (c) 2026 Earendil Inc. and contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

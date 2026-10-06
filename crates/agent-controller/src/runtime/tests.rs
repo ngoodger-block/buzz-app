@@ -1072,6 +1072,60 @@ fn blank_selectors_without_overrides_leave_harness_defaults_intact() {
 }
 
 #[test]
+#[cfg(unix)]
+fn hermes_launch_requires_defaults_and_preserves_saved_values_for_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = bundle(dir.path());
+    let launcher = dir.path().join("hermes-acp");
+    fs::copy(dir.path().join("buzz-agent"), &launcher).unwrap();
+    let key = Secret::parse(KEY, PUB).unwrap();
+    let mut saved = agent(dir.path());
+    saved.harness.command = launcher.to_string_lossy().into_owned();
+    let mut store = Store::open(dir.path().join("config")).unwrap();
+    store.insert(vec![saved.clone()]).unwrap();
+    let mut recovered = store.agents().unwrap().remove(0);
+    for (model, provider) in [("mistyped/model", ""), ("", "old-provider")] {
+        recovered.harness.model = model.into();
+        recovered.harness.provider = provider.into();
+        assert!(runtime
+            .command(&recovered, &key)
+            .unwrap_err()
+            .contains("Use Hermes Agent defaults"));
+    }
+    // Reading and a failed launch must leave the original values repairable.
+    let unchanged = store.agents().unwrap().remove(0);
+    assert_eq!(unchanged.harness.model, saved.harness.model);
+    assert_eq!(unchanged.harness.provider, saved.harness.provider);
+    recovered.harness.model.clear();
+    recovered.harness.provider.clear();
+    let mut defaults = crate::agent_defaults::AgentDefaults {
+        model: "another-harness-model".into(),
+        provider: "another-provider".into(),
+        ..Default::default()
+    };
+    defaults
+        .environment
+        .insert("BUZZ_ACP_MODEL".into(), "another-model".into());
+    let effective = crate::agent_defaults::effective(&recovered, &defaults);
+    let command = runtime
+        .command_with_defaults(&effective, &key, &deployment_defaults())
+        .unwrap();
+    let environment: BTreeMap<_, _> = command.get_envs().collect();
+    let env = |name| environment[std::ffi::OsStr::new(name)].unwrap();
+    assert_eq!(env("BUZZ_ACP_AGENT_COMMAND"), launcher.as_os_str());
+    assert_eq!(env("BUZZ_ACP_AGENT_ARGS"), "");
+    assert!(!environment.contains_key(std::ffi::OsStr::new("BUZZ_ACP_MODEL")));
+    assert_eq!(command.get_current_dir(), Some(dir.path()));
+    recovered
+        .environment
+        .insert("BUZZ_ACP_MODEL".into(), "override".into());
+    assert!(runtime
+        .command(&recovered, &key)
+        .unwrap_err()
+        .contains("host-reserved"));
+}
+
+#[test]
 fn launch_path_puts_bundled_tools_before_platform_tools() {
     let dir = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();

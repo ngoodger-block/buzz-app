@@ -120,13 +120,47 @@ export function retainRead(
   );
   const byRecent = [...frontiers].sort(byUse);
   const dropped = new Set<string>();
+  // Each kept mark's coverage answer, and the kept marks that answer read.
+  // A pure `covered` can only answer differently once one of those marks
+  // enters or leaves the kept set, so each round asks again only about
+  // those marks. The rounds and their results stay exactly the same.
+  const coverOf = new Map<string, string | undefined>();
+  const readers = new Map<string, Set<string>>();
+  const keep = (key: string, value: number) => {
+    retained.set(key, value);
+    for (const reader of readers.get(key) ?? []) coverOf.delete(reader);
+  };
+  const release = (key: string) => {
+    retained.delete(key);
+    coverOf.delete(key);
+    for (const reader of readers.get(key) ?? []) coverOf.delete(reader);
+  };
+  const keptCover = (key: string, value: number) => {
+    if (coverOf.has(key)) return coverOf.get(key);
+    const read = (other: string) => {
+      const set = readers.get(other) ?? new Set<string>();
+      readers.set(other, set);
+      set.add(key);
+    };
+    const answer = coveredBy?.(key, (other) => {
+      read(other);
+      return other === key ? value : retained.get(other);
+    });
+    if (answer !== undefined) read(answer);
+    const cover =
+      answer !== undefined && answer !== key && retained.has(answer)
+        ? answer
+        : undefined;
+    coverOf.set(key, cover);
+    return cover;
+  };
   const select = () => {
     for (const [key, value] of scoped) {
       if (retained.has(key) || dropped.has(key)) continue;
       // Stop at the first broad mark that does not fit, so a narrower mark
       // never takes the share ahead of it.
       if (!take(frontierKey(key), value, SCOPED_SHARE)) break;
-      retained.set(key, value);
+      keep(key, value);
     }
     for (const [key, value] of byRecent)
       if (
@@ -134,7 +168,7 @@ export function retainRead(
         !dropped.has(key) &&
         take(frontierKey(key), value)
       )
-        retained.set(key, value);
+        keep(key, value);
   };
   select();
   // Refilling can keep more covered marks, so repeat until nothing drops.
@@ -144,14 +178,10 @@ export function retainRead(
     // Prune against the kept marks only: a cover that did not fit cannot
     // replace anything. Decide on one snapshot so a cover is never pruned
     // after it has already replaced another mark.
-    const kept = new Map(retained);
     const covers = new Map<string, string>();
-    for (const [key, value] of kept) {
-      const cover = coveredBy(key, (other) =>
-        other === key ? value : kept.get(other),
-      );
-      if (cover !== undefined && cover !== key && kept.has(cover))
-        covers.set(key, cover);
+    for (const [key, value] of retained) {
+      const cover = keptCover(key, value);
+      if (cover !== undefined) covers.set(key, cover);
     }
     // A cover that is itself covered passes the recency on to what replaced it.
     const final = (key: string) => {
@@ -164,7 +194,7 @@ export function retainRead(
       const cover = final(key);
       if (cover === key || covers.has(cover)) continue;
       const value = retained.get(key) as number;
-      retained.delete(key);
+      release(key);
       dropped.add(key);
       pruned = true;
       used -= cost(frontierKey(key), value);

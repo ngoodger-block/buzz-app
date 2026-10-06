@@ -12,6 +12,8 @@ pub mod imports;
 
 pub type Result<T> = std::result::Result<T, String>;
 const LIMIT: u64 = 8 * 1024 * 1024;
+pub const DEFAULT_HOST_COMMAND_OUTPUT_BYTES: u64 = 4096;
+pub const MAX_HOST_COMMAND_OUTPUT_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -36,6 +38,12 @@ pub struct HostCommand {
     pub id: String,
     pub program: String,
     pub args: Vec<String>,
+    #[serde(
+        default,
+        rename = "maxOutputBytes",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_output_bytes: Option<u64>,
 }
 impl Manifest {
     pub fn validate(&self) -> Result<()> {
@@ -60,6 +68,9 @@ impl Manifest {
                         byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
                     })
                     || command.args.len() > 16
+                    || command
+                        .max_output_bytes
+                        .is_some_and(|limit| !(1..=MAX_HOST_COMMAND_OUTPUT_BYTES).contains(&limit))
                     || command
                         .args
                         .iter()
@@ -553,7 +564,20 @@ impl Manager {
         if manifest.id != snapshot.2 {
             return Err("Reloaded plugin manifest ID changed; import it as a new plugin".into());
         }
-        if manifest.host.clone().unwrap_or_default() != snapshot.3 {
+        // Compare effective access without changing the stored manifest representation.
+        let effective_grants = |mut grants: HostGrants| {
+            for command in &mut grants.commands {
+                command.max_output_bytes = Some(
+                    command
+                        .max_output_bytes
+                        .unwrap_or(DEFAULT_HOST_COMMAND_OUTPUT_BYTES),
+                );
+            }
+            grants
+        };
+        if effective_grants(manifest.host.clone().unwrap_or_default())
+            != effective_grants(snapshot.3)
+        {
             return Err("Host access changed; use Load from folder to review it".into());
         }
         let revision = hash(&bytes);
@@ -761,7 +785,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{artifact_from_text, Manager, Manifest};
+    use super::{artifact_from_text, Manager, Manifest, MAX_HOST_COMMAND_OUTPUT_BYTES};
     use std::fs;
 
     #[test]
@@ -780,6 +804,27 @@ mod tests {
             }
         });
         assert!(artifact_from_text(&manifest.to_string(), "export const x = 1".into()).is_ok());
+        let old: Manifest = serde_json::from_value(manifest.clone()).unwrap();
+        assert_eq!(
+            old.host.as_ref().unwrap().commands[0].max_output_bytes,
+            None
+        );
+        assert_eq!(serde_json::to_value(&old).unwrap(), manifest);
+        for limit in [1, 4096, MAX_HOST_COMMAND_OUTPUT_BYTES] {
+            let mut valid = manifest.clone();
+            valid["host"]["commands"][0]["maxOutputBytes"] = serde_json::json!(limit);
+            assert!(artifact_from_text(&valid.to_string(), "export const x = 1".into()).is_ok());
+        }
+        for limit in [
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!(MAX_HOST_COMMAND_OUTPUT_BYTES + 1),
+        ] {
+            let mut invalid = manifest.clone();
+            invalid["host"]["commands"][0]["maxOutputBytes"] = limit;
+            assert!(artifact_from_text(&invalid.to_string(), "export const x = 1".into()).is_err());
+        }
         for invalid_origin in [
             "http://api.example.com",
             "https://api.example.com/path",
@@ -837,7 +882,7 @@ mod tests {
 
         fs::write(
             source.join("manifest.json"),
-            r#"{"id":"example.page","name":"Example","apiVersion":1,"host":{"commands":[{"id":"second","program":"example-cli","args":["status","--json"]}],"networkOrigins":["https://two.example"]}}"#,
+            r#"{"id":"example.page","name":"Example","apiVersion":1,"host":{"commands":[{"id":"second","program":"example-cli","args":["status","--json"],"maxOutputBytes":65536}],"networkOrigins":["https://two.example"]}}"#,
         )
         .unwrap();
         let second = manager
@@ -851,6 +896,12 @@ mod tests {
         assert!(manager.host_grants("example.page", &first).is_err());
         let grants = manager.host_grants("example.page", &second).unwrap();
         assert_eq!(grants.commands[0].id, "second");
+        assert_eq!(grants.commands[0].max_output_bytes, Some(65536));
+        let reopened = Manager::open(Some(temp.path().into()), "test", false).unwrap();
+        assert_eq!(
+            reopened.host_grants("example.page", &second).unwrap(),
+            grants
+        );
         assert_eq!(grants.network_origins, ["https://two.example"]);
         manager.change("disable", "example.page").unwrap();
         assert!(manager.host_grants("example.page", &second).is_err());

@@ -53,14 +53,19 @@ catch-up (including a message taller than the viewport):
   count (see [Relevant replies](#relevant-replies)) are all attention, and stay
   unread until read in their thread. Replies outside the viewer's conversations
   do not count at all, so there is no reply activity to quiet. Mentions,
-  broadcasts, DMs and manual intent are not quieted. Participation discovered
+  broadcasts and marked messages are not quieted. Participation discovered
   later makes a reply relevant again, with its own unread state intact.
 - `thread-activity:<root>` acknowledges replies through the newest reply only in
   that thread. A collapsed newest reply, or one outside the bottom viewport in a
   branch-ordered thread, cannot earn catch-up; visible rows still read individually.
 - Both keys use verified event timestamps, never wall time. Neither enters generic
-  channel/thread inheritance or remote override baselines. Automatic catch-up does
-  not clear manual-unread intent and uses the same cancellable reading lease.
+  channel/thread inheritance or remote override baselines. Channel catch-up ends
+  a local manual unread on the channel itself; message and thread manual-unread
+  intent stays. Catch-up uses the same cancellable reading lease.
+- A DM is read whole. Any earned dwell in a DM, on visible rows or at the bottom,
+  advances the DM's channel frontier through the newest retained verified message
+  (replies included) and ends a local manual unread on the DM. It writes no
+  `activity:` or per-message marks. Like catch-up, it never uses wall time.
 
 This intentionally relaxes the old individual-row-only policy for ordinary
 backlog and the thread being read, without reading unopened threads' replies.
@@ -288,7 +293,8 @@ still require retained evidence of their own.
 | Intent | Durable frontier | Local manual-unread clears |
 | --- | --- | --- |
 | Automatic visible dwell | Individual verified message | None |
-| Automatic bottom dwell | Ordinary channel activity or that thread’s replies through verified evidence | None |
+| Automatic bottom dwell | Ordinary channel activity or that thread’s replies through verified evidence | Channel only (channel bottom, not a thread) |
+| Automatic DM dwell (visible rows or bottom) | DM channel through the newest retained verified message | DM channel only |
 | `markThrough(target, messageId)` | Explicit verified target prefix | That target only |
 | `markChannelRead(channelId)` | Channel through max(click time, newest retained verified message) | Channel, retained messages, verified same-channel reply roots, and threads whose top-level root is retained |
 | Channel read with no evidence | Click time on frontier-capable hosts; none otherwise | Channel only |

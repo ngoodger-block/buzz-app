@@ -118,8 +118,10 @@ acquisition is not implemented, so deployments enforcing it are outside acceptan
 Windows/Linux custody, credential migration and release-signing acceptance remain
 separate limitations.
 
-Development with `VITE_BUZZ_LIVE=1` continues to use its pinned legacy broker
-identity, and does not offer native private-key controls. Creating/importing the
+Development with a public `BUZZ_DEV_VIEWER` pin enables the legacy broker
+(Vite derives `VITE_BUZZ_LIVE=1`), even inside `just desktop`, and does not offer
+native private-key controls. Without the pin, supported desktop development uses
+the native identity path; see the [host-mode matrix](contributing.md#shared-logic-and-host-boundaries). Creating/importing the
 new native item does not update that old blob. Future reset/rotation would not
 synchronize copies automatically; neither operation is in this scope.
 
