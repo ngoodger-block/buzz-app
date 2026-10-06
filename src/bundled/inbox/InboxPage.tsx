@@ -563,6 +563,8 @@ export function InboxView({
                       key={label}
                       label={label}
                       variant="pill"
+                      data-selected={archivedView === value || undefined}
+                      aria-current={archivedView === value ? "page" : undefined}
                       selected={archivedView === value}
                       onClick={() => {
                         if (archivedView === value) return;
