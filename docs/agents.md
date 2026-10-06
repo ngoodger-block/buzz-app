@@ -610,6 +610,24 @@ Silicon fixture measurements, not a live-network SLA.
 Packaged/native activity uses the native observer decoder; attended native/package
 acceptance and cross-platform CI remain separate from these local results.
 
+### Observed Codex session settings
+
+The Codex agent editor separates **Saved requested settings** from model and
+effort independently reported in retained conversation activity. Each row names
+its session, turn, worker and observation time and stays explicitly historical;
+it does not certify the current launch, saved revision, discovery result or
+validation request. Rejected settings, same-turn reported fallback and failed
+turns are visible without rendering raw ACP output. Missing or ambiguous evidence
+is **Not reported**.
+
+This view projects the existing bounded `agentActivity` records and acquires the
+existing display lease only for the exact agent record in the connected
+community. It adds no history fetch, cache, poller or transport. The existing
+owner-encrypted observer publishes broader activity, including prompts and tool
+activity; filtering this settings view does not restrict publication or archive
+capture. See [Codex observed session settings](codex-observed-settings.md) for
+the acceptance boundary and live runbook.
+
 ### Composer-entry feedback rounds
 
 The first channel-only pass added a generic plugin accessory below the composer.
