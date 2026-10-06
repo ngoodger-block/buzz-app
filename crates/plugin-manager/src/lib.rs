@@ -157,6 +157,8 @@ pub fn bundled_manifests() -> Vec<Manifest> {
             .expect("github manifest"),
         serde_json::from_str(include_str!("../../../src/bundled/inbox/manifest.json"))
             .expect("valid Inbox manifest"),
+        serde_json::from_str(include_str!("../../../src/bundled/reminders/manifest.json"))
+            .expect("reminders manifest"),
         serde_json::from_str(include_str!("../../../src/bundled/bestie/manifest.json"))
             .expect("bestie manifest"),
         serde_json::from_str(include_str!("../../../src/bundled/projects/manifest.json"))
@@ -178,6 +180,32 @@ pub fn bundled_manifests() -> Vec<Manifest> {
         ))
         .expect("moderation manifest"),
     ]
+}
+/// New bundles must opt in to the default-on policy.
+fn enabled_by_default(id: &str) -> bool {
+    matches!(
+        id,
+        "buzz.channels"
+            | "buzz.feedback"
+            | "buzz.diffs"
+            | "buzz.identity-naming"
+            | "buzz.agent-activity"
+            | "buzz.terminal"
+            | "buzz.profiles"
+            | "buzz.links"
+            | "buzz.mentions"
+            | "buzz.emoji"
+            | "buzz.github"
+            | "buzz.inbox"
+            | "buzz.reminders"
+            | "buzz.projects"
+            | "buzz.agents"
+            | "buzz.workflows"
+            | "buzz.sessions"
+            | "block.hosted-communities"
+            | "block.builderlab"
+            | "buzz.moderation"
+    )
 }
 fn is_bundled(id: &str) -> bool {
     bundled_manifests().iter().any(|manifest| manifest.id == id)
@@ -383,29 +411,7 @@ impl Manager {
                         .bundled_overrides
                         .get(&manifest.id)
                         .copied()
-                        // New bundles must opt in to the default-on policy.
-                        .unwrap_or(matches!(
-                            manifest.id.as_str(),
-                            "buzz.channels"
-                                | "buzz.feedback"
-                                | "buzz.diffs"
-                                | "buzz.identity-naming"
-                                | "buzz.agent-activity"
-                                | "buzz.terminal"
-                                | "buzz.profiles"
-                                | "buzz.links"
-                                | "buzz.mentions"
-                                | "buzz.emoji"
-                                | "buzz.github"
-                                | "buzz.inbox"
-                                | "buzz.projects"
-                                | "buzz.agents"
-                                | "buzz.workflows"
-                                | "buzz.sessions"
-                                | "block.hosted-communities"
-                                | "block.builderlab"
-                                | "buzz.moderation"
-                        ));
+                        .unwrap_or_else(|| enabled_by_default(&manifest.id));
                 PluginInfo {
                     manifest,
                     source: "bundled",
@@ -785,8 +791,49 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{artifact_from_text, Manager, Manifest, MAX_HOST_COMMAND_OUTPUT_BYTES};
+    use super::{
+        artifact_from_text, bundled_manifests, enabled_by_default, Manager, Manifest,
+        MAX_HOST_COMMAND_OUTPUT_BYTES,
+    };
+    use std::collections::BTreeMap;
     use std::fs;
+
+    #[test]
+    fn native_catalog_matches_desktop_bundles() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/bundled");
+        let index = fs::read_to_string(format!("{root}/index.ts")).unwrap();
+        let mut dirs = BTreeMap::new();
+        for line in index.lines() {
+            if let Some(rest) = line.strip_prefix("import ") {
+                if let Some((name, path)) = rest.split_once(" from \"./") {
+                    if let Some(dir) = path.strip_suffix("/manifest.json\";") {
+                        dirs.insert(name.to_string(), dir.to_string());
+                    }
+                }
+            }
+        }
+        let mut expected = BTreeMap::new();
+        for entry in index.split("manifest: { ...").skip(1) {
+            let name = entry.split(',').next().unwrap();
+            let default = entry
+                .split("enabledByDefault: ")
+                .nth(1)
+                .unwrap()
+                .starts_with("true");
+            let manifest =
+                fs::read_to_string(format!("{root}/{}/manifest.json", dirs[name])).unwrap();
+            let manifest: Manifest = serde_json::from_str(&manifest).unwrap();
+            expected.insert(manifest.id, default);
+        }
+        let native: BTreeMap<String, bool> = bundled_manifests()
+            .into_iter()
+            .map(|manifest| {
+                let default = enabled_by_default(&manifest.id);
+                (manifest.id, default)
+            })
+            .collect();
+        assert_eq!(native, expected);
+    }
 
     #[test]
     fn validates_host_declarations_and_old_manifests() {
