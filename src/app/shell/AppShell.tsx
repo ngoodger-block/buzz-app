@@ -18,6 +18,10 @@ import { PageIcon } from "./PageIcon";
 import { PanelFrame } from "../../features/panels/PanelFrame";
 import { macTitleBarDragHandlers } from "./title-bar";
 import { WindowControls } from "./WindowControls";
+import {
+  ContributionBoundary,
+  contributionKey,
+} from "../../features/conversation/ContributionBoundary";
 
 const macDesktop = isTauri() && /Mac/i.test(navigator.platform);
 const titleBarDragProps = macDesktop ? macTitleBarDragHandlers : {};
@@ -123,7 +127,16 @@ export function AppShell({
               }}
               selected={selected === page.key}
               label={label}
-              trailing={Badge && <Badge />}
+              trailing={
+                Badge && (
+                  <ContributionBoundary
+                    key={contributionKey(page)}
+                    fallback={null}
+                  >
+                    <Badge />
+                  </ContributionBoundary>
+                )
+              }
               icon={
                 <span className="shell-page-icon">
                   <PageIcon

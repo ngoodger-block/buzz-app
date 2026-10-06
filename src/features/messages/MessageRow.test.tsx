@@ -1641,3 +1641,90 @@ it("dismisses an unsubmitted report when its retained row is suspended", async (
     cleanup();
   }
 });
+
+it("contains a broken plugin message action to its own contribution", () => {
+  const listeners = new Set<() => void>();
+  const entry = (
+    id: string,
+    marker: () => React.ReactNode,
+    matches = () => true,
+  ) => ({
+    id,
+    title: id,
+    key: `test.plugin/${id}`,
+    pluginId: "test.plugin",
+    revision: "one",
+    matches,
+    icon: marker,
+    component: () => null,
+    marker,
+  });
+  const broken = () => {
+    throw new Error("broken contribution");
+  };
+  const healthy = entry("healthy", () => <span>healthy marker</span>);
+  let actions = [
+    entry(
+      "throwing-matcher",
+      () => <span>never</span>,
+      () => broken(),
+    ),
+    entry("throwing-marker", broken),
+    healthy,
+  ];
+  const store = {
+    snapshot: () => actions,
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => void listeners.delete(listener);
+    },
+  };
+  const swap = (next: typeof actions) => {
+    actions = next;
+    act(() => {
+      for (const listener of listeners) listener();
+    });
+  };
+  const none: never[] = [];
+  const channelList = { channels: [], status: "ready" };
+  const session = {
+    viewer: "viewer",
+    presence: {
+      subscribe: () => () => {},
+      status: () => "unknown",
+      limited: () => false,
+    },
+    messages: { report: undefined },
+    channels: { subscribeList: () => () => {}, list: () => channelList },
+  } as unknown as RelaySession;
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    renderDom(
+      <MessageRow
+        row={{ ...row, replyCount: 0 }}
+        session={session}
+        profile={undefined}
+        media={() => undefined}
+        onOpenLink={() => false}
+        day={false}
+        retry={undefined}
+        extensions={{
+          tools: { snapshot: () => none, subscribe: () => () => {} },
+          inline: { snapshot: () => none, subscribe: () => () => {} },
+          actions: store,
+        }}
+      />,
+    );
+    expect(screen.getByText("Root")).toBeInTheDocument();
+    expect(screen.getByText("healthy marker")).toBeInTheDocument();
+    expect(screen.queryByText("never")).toBeNull();
+    // Disabling and re-enabling is a fresh installation with a fresh boundary.
+    swap([healthy]);
+    swap([entry("throwing-marker", () => <span>fixed marker</span>), healthy]);
+    expect(screen.getByText("fixed marker")).toBeInTheDocument();
+    expect(screen.getByText("healthy marker")).toBeInTheDocument();
+  } finally {
+    error.mockRestore();
+    cleanup();
+  }
+});

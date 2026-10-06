@@ -28,6 +28,10 @@ import { profileTarget } from "../profiles/target";
 import { MessageBody } from "../conversation/MessageBody";
 import { InlineText } from "../conversation/InlineText";
 import type { ConversationExtensions } from "../conversation/contracts";
+import {
+  ContributionBoundary,
+  contributionKey,
+} from "../conversation/ContributionBoundary";
 import type { ChannelMessage, Profile } from "../relay/contracts";
 import { AttachmentImage } from "./AttachmentImage";
 import { DeliveryNotice } from "./DeliveryNotice";
@@ -248,7 +252,13 @@ export const MessageRow = memo(function MessageRow({
     extensions?.actions?.snapshot ?? noActions,
   );
   const actions = session
-    ? registeredActions.filter((action) => action.matches(row, session))
+    ? registeredActions.filter((action) => {
+        try {
+          return action.matches(row, session);
+        } catch {
+          return false; // A broken optional action leaves the menu usable.
+        }
+      })
     : [];
   const [openAction, setOpenAction] = useState<string>();
   const opened = actions.find((action) => action.key === openAction);
@@ -280,14 +290,16 @@ export const MessageRow = memo(function MessageRow({
       Report
     </MenuItem>
   );
-  const actionItems = actions.map(({ key, title, icon: Icon }) => (
-    <MenuItem key={key} onClick={() => setOpenAction(key)}>
-      {Icon && (
+  const actionItems = actions.map((action) => (
+    <MenuItem key={action.key} onClick={() => setOpenAction(action.key)}>
+      {action.icon && (
         <MenuIcon>
-          <Icon />
+          <ContributionBoundary key={contributionKey(action)} fallback={null}>
+            <action.icon />
+          </ContributionBoundary>
         </MenuIcon>
       )}
-      {title}
+      {action.title}
     </MenuItem>
   ));
   // Keep mixed attachments in sender order; only adjacent images share a strip.
@@ -414,11 +426,13 @@ export const MessageRow = memo(function MessageRow({
         )}
         <div className={styles.messageBody}>
           {opened && session && (
-            <opened.component
-              message={row}
-              session={session}
-              close={() => setOpenAction(undefined)}
-            />
+            <ContributionBoundary key={contributionKey(opened)} fallback={null}>
+              <opened.component
+                message={row}
+                session={session}
+                close={() => setOpenAction(undefined)}
+              />
+            </ContributionBoundary>
           )}
           {report && reporting === "open" && (
             <ReportMessageDialog
@@ -519,9 +533,14 @@ export const MessageRow = memo(function MessageRow({
               )}
               {session &&
                 actions.map(
-                  ({ key, marker: Marker }) =>
-                    Marker && (
-                      <Marker key={key} message={row} session={session} />
+                  (action) =>
+                    action.marker && (
+                      <ContributionBoundary
+                        key={contributionKey(action)}
+                        fallback={null}
+                      >
+                        <action.marker message={row} session={session} />
+                      </ContributionBoundary>
                     ),
                 )}
             </div>
