@@ -156,18 +156,21 @@ it("switching Pi, Goose and Buzz resets incompatible selections and uses each ha
         draft={draft}
         options={[
           {
+            id: "buzz-agent",
             command: "buzz-agent",
             label: "Buzz Agent",
             providers: [{ value: "databricks_v2", label: "Databricks v2" }],
             defaultArgs: [],
           },
           {
+            id: "goose",
             command: "goose",
             label: "Goose",
             providers: [],
             defaultArgs: [],
           },
           {
+            id: "pi",
             command: "/local/buzz-pi-acp",
             label: "Pi",
             providers: [{ value: "anthropic", label: "Anthropic" }],
@@ -189,6 +192,7 @@ it("switching Pi, Goose and Buzz resets incompatible selections and uses each ha
     provider: "",
     model: "",
   });
+  expect(current.integration).toBeUndefined();
   await user.click(screen.getByRole("combobox", { name: "LLM Provider" }));
   const extension = await screen.findByRole("option", { name: "extension" });
   // Signed-in providers come from the catalog; the static harness list is
@@ -216,6 +220,7 @@ it("switching Pi, Goose and Buzz resets incompatible selections and uses each ha
     provider: "",
     model: "",
   });
+  expect(current.integration).toBeUndefined();
   await user.click(screen.getByRole("combobox", { name: "Harness" }));
   await user.click(await screen.findByRole("option", { name: "Buzz Agent" }));
   expect(current).toMatchObject({
@@ -224,6 +229,7 @@ it("switching Pi, Goose and Buzz resets incompatible selections and uses each ha
     provider: "databricks_v2",
     model: "",
   });
+  expect(current.integration).toBeUndefined();
 });
 
 it("disables Pi's provider list while signed-in providers load and keeps the current choice", () => {
