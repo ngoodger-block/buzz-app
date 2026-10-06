@@ -25,6 +25,8 @@ export type Reminder = Readonly<{
 }>;
 export type RemindersState = Readonly<{
   status: "loading" | "ready" | "error";
+  /** True once a history read has succeeded; local saves and live arrivals don't count. */
+  hydrated: boolean;
   reminders: readonly Reminder[];
   error?: string;
 }>;
@@ -139,12 +141,17 @@ export function createReminders(options: {
   const listeners = new Set<() => void>();
   let state: RemindersState = Object.freeze({
     status: "loading",
+    hydrated: false,
     reminders: [],
   });
   let loading: Promise<void> | undefined;
-  const publishState = (next: Omit<RemindersState, "reminders">) => {
+  const publishState = (
+    next: Omit<RemindersState, "reminders" | "hydrated">,
+    hydrated = state.hydrated,
+  ) => {
     state = Object.freeze({
       ...next,
+      hydrated,
       reminders: Object.freeze([...heads.values()]),
     });
     for (const listener of listeners) listener();
@@ -227,7 +234,7 @@ export function createReminders(options: {
             signal,
           );
           await accept(events);
-          publishState({ status: "ready" });
+          publishState({ status: "ready" }, true);
         } catch (error) {
           if (signal.aborted) return;
           publishState({

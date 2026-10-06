@@ -24,16 +24,30 @@ const wire = (id: string, notBefore: number): RelayEvent =>
     sig: "",
   }) as unknown as RelayEvent;
 
-function session(history: Promise<RelayEvent[]>) {
+function session(
+  history: Promise<RelayEvent[]> | (() => Promise<RelayEvent[]>),
+) {
   return createReminders({
     viewer,
     signal: new AbortController().signal,
     host: {
       decode: async (events) =>
         events.map((e) => ({ eventId: e.id, content: JSON.parse(e.content) })),
-      sign: () => Promise.reject(new Error("unused")),
+      sign: async ({ d, createdAt, notBefore, content }) =>
+        ({
+          id: d,
+          pubkey: viewer,
+          kind: 30300,
+          created_at: createdAt,
+          tags: [
+            ["d", d],
+            ["not_before", String(notBefore)],
+          ],
+          content: JSON.stringify(content),
+          sig: "",
+        }) as unknown as RelayEvent,
     },
-    query: () => history,
+    query: typeof history === "function" ? history : () => history,
     publish: async () => {},
   });
 }
@@ -108,4 +122,70 @@ it("suppresses reminders already due when a community is first bound, and fires 
   connect(`b:${viewer}`, second.capability);
   await flush();
   expect(submit).toHaveBeenCalledTimes(1);
+});
+
+function deferred() {
+  let resolve: (events: RelayEvent[]) => void = () => {};
+  let reject: (error: Error) => void = () => {};
+  const promise = new Promise<RelayEvent[]>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+it("notifies a reminder from slow history after a local save during loading", async () => {
+  const history = deferred();
+  const model = session(history.promise);
+  const { submit, connect } = mount();
+  connect(`origin:${viewer}`, model.capability);
+  at(105);
+  await model.capability.create(target, 10_000);
+  await flush();
+  at(106);
+  history.resolve([wire("overdue", 103)]);
+  await flush();
+  expect(submit).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ sourceKey: "overdue:103" }),
+  );
+});
+
+it("keeps the bind-time window through a failed first read until a refresh succeeds", async () => {
+  const first = deferred();
+  const reads = [first.promise, Promise.resolve([wire("overdue", 103)])];
+  const model = session(() => reads.shift() as Promise<RelayEvent[]>);
+  const { submit, connect } = mount();
+  connect(`origin:${viewer}`, model.capability);
+  model.receive([wire("later", 10_000)]);
+  await flush();
+  at(105);
+  first.reject(new Error("offline"));
+  await flush();
+  at(106);
+  await model.capability.refresh();
+  await flush();
+  expect(submit).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ sourceKey: "overdue:103" }),
+  );
+});
+
+it("keeps the bind-time window when a live arrival follows a failed first read", async () => {
+  const reads = [
+    Promise.reject(new Error("offline")),
+    Promise.resolve([wire("overdue", 103)]),
+  ];
+  const model = session(() => reads.shift() as Promise<RelayEvent[]>);
+  const { submit, connect } = mount();
+  connect(`origin:${viewer}`, model.capability);
+  await flush();
+  expect(model.capability.snapshot().status).toBe("error");
+  at(105);
+  model.receive([wire("later", 10_000)]);
+  await flush();
+  at(106);
+  await model.capability.refresh();
+  await flush();
+  expect(submit).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ sourceKey: "overdue:103" }),
+  );
 });

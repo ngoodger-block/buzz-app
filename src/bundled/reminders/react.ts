@@ -5,6 +5,7 @@ import type { RemindersState } from "../../features/relay/reminders";
 export const noSubscribe = () => () => {};
 const idle: RemindersState = Object.freeze({
   status: "loading",
+  hydrated: false,
   reminders: [],
 });
 export const noState = () => idle;

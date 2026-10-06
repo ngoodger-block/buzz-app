@@ -61,10 +61,10 @@ export const apply: PluginModule["apply"] = (ctx) => {
         connection.session.reminders !== bound
       )
         return;
-      const { status, reminders } = bound.snapshot();
-      // Hold the window open until the first read lands, so history that
-      // arrives after a live update still notifies.
-      if (status !== "ready") return;
+      const { hydrated, reminders } = bound.snapshot();
+      // Hold the window open until a history read succeeds, so history that
+      // arrives after a local save, live update or failed read still notifies.
+      if (!hydrated) return;
       const scope = scopeOf(connection);
       const watermark = watermarks.get(boundScope) ?? now;
       for (const reminder of dueSince(reminders, watermark, now)) {
