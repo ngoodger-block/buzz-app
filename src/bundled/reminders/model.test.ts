@@ -92,14 +92,15 @@ describe("due reminders", () => {
 });
 
 describe("reminder grouping", () => {
-  it("buckets pending reminders and hides done and cancelled", () => {
+  it("buckets pending reminders, lists done newest first and hides cancelled", () => {
     const groups = groupReminders(
       [
         reminder({ id: "later", notBefore: 3000 }),
         reminder({ id: "zero", notBefore: 0 }),
         reminder({ id: "overdue", notBefore: 500 }),
         reminder({ id: "today", notBefore: 1500 }),
-        reminder({ id: "done", notBefore: 500, status: "done" }),
+        { ...reminder({ id: "done", status: "done" }), createdAt: 1 },
+        { ...reminder({ id: "done-later", status: "done" }), createdAt: 2 },
         reminder({ id: "cancelled", notBefore: 1500, status: "cancelled" }),
       ],
       NOW,
@@ -109,6 +110,7 @@ describe("reminder grouping", () => {
       ["Overdue", ["zero", "overdue"]],
       ["Today", ["today"]],
       ["Upcoming", ["later"]],
+      ["Done", ["done-later", "done"]],
     ]);
     expect(
       groupReminders([reminder({ notBefore: 3000 })], NOW, 2000).map(

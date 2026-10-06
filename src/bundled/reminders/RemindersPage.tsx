@@ -158,28 +158,34 @@ function ReminderRow({
       </div>
       <div className={styles.actions}>
         {open && <Button onClick={open}>Open</Button>}
-        <MenuRoot>
-          <MenuTrigger render={<Button>Snooze</Button>} />
-          <MenuPopup>
-            {TIME_PRESETS.map((preset) => (
-              <MenuItem
-                key={preset.label}
-                onClick={() => run(reminders.snooze(reminder.id, preset.at()))}
-              >
-                {preset.label}
-              </MenuItem>
-            ))}
-          </MenuPopup>
-        </MenuRoot>
-        <Button onClick={() => run(reminders.complete(reminder.id))}>
-          Done
-        </Button>
-        <Button
-          variant="ghost"
-          onClick={() => run(reminders.cancel(reminder.id))}
-        >
-          Cancel
-        </Button>
+        {reminder.status === "pending" && (
+          <>
+            <MenuRoot>
+              <MenuTrigger render={<Button>Snooze</Button>} />
+              <MenuPopup>
+                {TIME_PRESETS.map((preset) => (
+                  <MenuItem
+                    key={preset.label}
+                    onClick={() =>
+                      run(reminders.snooze(reminder.id, preset.at()))
+                    }
+                  >
+                    {preset.label}
+                  </MenuItem>
+                ))}
+              </MenuPopup>
+            </MenuRoot>
+            <Button onClick={() => run(reminders.complete(reminder.id))}>
+              Done
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => run(reminders.cancel(reminder.id))}
+            >
+              Cancel
+            </Button>
+          </>
+        )}
       </div>
     </li>
   );

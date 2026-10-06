@@ -53,18 +53,19 @@ export const hasPendingReminder = (
 
 export type ReminderGroup = Readonly<{ label: string; reminders: Reminder[] }>;
 
-/** Overdue, Today and Upcoming pending reminders; done and cancelled are hidden. */
+/** Overdue, Today and Upcoming pending reminders, then Done newest first; cancelled is hidden. */
 export function groupReminders(
   reminders: readonly Reminder[],
   now: number,
   endOfToday: number,
 ): ReminderGroup[] {
-  const groups = { Overdue: [], Today: [], Upcoming: [] } as Record<
+  const groups = { Overdue: [], Today: [], Upcoming: [], Done: [] } as Record<
     string,
     Reminder[]
   >;
   for (const reminder of reminders) {
     const at = reminder.notBefore;
+    if (reminder.status === "done") groups.Done?.push(reminder);
     if (reminder.status !== "pending" || at === undefined) continue;
     const label =
       at <= now ? "Overdue" : at <= endOfToday ? "Today" : "Upcoming";
@@ -74,7 +75,11 @@ export function groupReminders(
     .filter(([, list]) => list.length)
     .map(([label, list]) => ({
       label,
-      reminders: list.sort((a, b) => (a.notBefore ?? 0) - (b.notBefore ?? 0)),
+      reminders: list.sort((a, b) =>
+        label === "Done"
+          ? b.createdAt - a.createdAt
+          : (a.notBefore ?? 0) - (b.notBefore ?? 0),
+      ),
     }));
 }
 
