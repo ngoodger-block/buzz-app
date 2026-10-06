@@ -20,7 +20,7 @@ import { AgentEnvironmentEditor } from "./AgentEnvironmentEditor";
 import { AgentHarnessEditor } from "./AgentHarnessEditor";
 import { AgentModelPicker } from "./AgentModelPicker";
 import { ProviderApiKeyField } from "./ProviderApiKeyField";
-import { harnessPolicy } from "./harness-policy";
+import { harnessOption, harnessPolicy } from "./harness-policy";
 
 // Draft → Agent defaults → build floor, as native resolves it; null when a
 // saved or global BUZZ_AGENT_PROVIDER override hides the effective value.
@@ -101,6 +101,10 @@ export function AgentSettingsFields({
   const pi = draft.command.split("/").at(-1) === "buzz-pi-acp";
   const goose = isGoose(draft.command);
   const policy = harnessPolicy(state.data?.harnessOptions, draft.command);
+  const integration = harnessOption(
+    state.data?.harnessOptions,
+    draft.command,
+  )?.id;
   const globalKeys = state.data?.defaultSettings?.environmentKeys ?? [];
   // Saved and global environment values are write-only; removing an agent's
   // key exposes the global key rather than the visible scalar default.
@@ -271,6 +275,7 @@ export function AgentSettingsFields({
           )}
           <AgentModelPicker
             policy={policy}
+            integration={integration}
             providerSelection={providerSelection}
             onPiProviders={setPiProviders}
             disabled={disabled}

@@ -10,7 +10,10 @@ use buzz_agent_controller::AgentEdit;
 use serde::{Deserialize, Serialize};
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex,
+    },
     time::Duration,
 };
 use tauri_plugin_opener::OpenerExt;
@@ -38,6 +41,11 @@ pub(crate) struct Request {
     host: String,
     filter: String,
     action: Operation,
+    /// Stable native identity. Editable executable names never grant managed
+    /// Codex behavior.
+    integration: Option<buzz_agent_controller::HarnessIntegration>,
+    /// Optional model whose reported effort metadata should be returned.
+    selected_model: Option<String>,
     /// Blank host/filter are inherited from write-only Agent defaults the UI
     /// cannot see, so native supplies them instead of treating blank as explicit.
     #[serde(default)]
@@ -61,15 +69,46 @@ pub(crate) struct Catalog {
     disconnected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     tested_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    codex: Option<CodexCatalog>,
 }
 #[derive(Serialize)]
 struct Model {
     id: String,
     name: String,
 }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexCatalog {
+    /// False means no usable model option was published. True with an empty
+    /// `models` array is a known-empty catalog.
+    models_known: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolved_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolved_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<CodexEffort>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexEffort {
+    model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current: Option<String>,
+    options: Vec<Model>,
+}
+#[cfg(unix)]
+#[derive(Debug)]
+enum CodexRunError {
+    Message(String),
+    Transport(crate::codex_acp::Failure),
+}
 struct Ticket {
     id: u64,
     abort: Option<tokio::task::AbortHandle>,
+    current: Option<Arc<AtomicBool>>,
+    process_done: bool,
     cancelled: bool,
     created: std::time::Instant,
 }
@@ -78,10 +117,122 @@ struct State {
     next: u64,
     pending: Option<Ticket>,
     closed: bool,
+    cleanup_failed: bool,
+}
+#[cfg(unix)]
+struct CodexFinish {
+    owner: ModelHost,
+    ticket: u64,
+    complete: bool,
+}
+#[cfg(unix)]
+impl CodexFinish {
+    fn finish(mut self, result: Result<Catalog, CodexRunError>) -> Result<Catalog, String> {
+        let mut state = self.owner.state.lock().map_err(|_| CANCELLED.to_owned())?;
+        if !state
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.id == self.ticket)
+        {
+            self.complete = true;
+            return Err(CANCELLED.to_owned());
+        }
+        state.cleanup_failed |= matches!(
+            &result,
+            Err(CodexRunError::Transport(crate::codex_acp::Failure::Cleanup))
+        );
+        if let Some(pending) = state.pending.as_mut() {
+            pending.process_done = true;
+        }
+        if state
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.cancelled || state.closed)
+        {
+            state.pending = None;
+        }
+        self.owner.settled.notify_all();
+        self.complete = true;
+        match result {
+            Ok(catalog) => Ok(catalog),
+            Err(CodexRunError::Transport(failure)) => Err(codex_failure(failure)),
+            Err(CodexRunError::Message(message)) => Err(message),
+        }
+    }
+}
+#[cfg(unix)]
+impl Drop for CodexFinish {
+    fn drop(&mut self) {
+        if self.complete {
+            return;
+        }
+        if let Ok(mut state) = self.owner.state.lock() {
+            if state
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.id == self.ticket)
+            {
+                state.cleanup_failed = true;
+                if let Some(pending) = state.pending.as_mut() {
+                    pending.process_done = true;
+                }
+                if state
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.cancelled || state.closed)
+                {
+                    state.pending = None;
+                }
+                self.owner.settled.notify_all();
+            }
+        }
+    }
+}
+#[cfg(unix)]
+struct CodexAdmission {
+    owner: ModelHost,
+    ticket: u64,
+    retired: bool,
+}
+#[cfg(unix)]
+impl CodexAdmission {
+    fn retire(&mut self) -> Result<(), String> {
+        let mut state = self.owner.state.lock().map_err(|_| CANCELLED)?;
+        let pending = state
+            .pending
+            .as_ref()
+            .filter(|pending| pending.id == self.ticket)
+            .ok_or(CANCELLED)?;
+        let current = pending
+            .current
+            .as_ref()
+            .is_some_and(|current| current.load(Ordering::SeqCst));
+        let cancelled = pending.cancelled || state.closed || !current;
+        let cleanup_failed = state.cleanup_failed;
+        state.pending = None;
+        self.owner.settled.notify_all();
+        self.retired = true;
+        if cleanup_failed {
+            Err("Codex model process cleanup could not be confirmed".into())
+        } else if cancelled {
+            Err(CANCELLED.into())
+        } else {
+            Ok(())
+        }
+    }
+}
+#[cfg(unix)]
+impl Drop for CodexAdmission {
+    fn drop(&mut self) {
+        if !self.retired {
+            let _ = self.owner.cancel(self.ticket);
+        }
+    }
 }
 #[derive(Clone)]
 pub(crate) struct ModelHost {
     state: Arc<Mutex<State>>,
+    settled: Arc<Condvar>,
     factory: Arc<dyn Factory>,
 }
 impl ModelHost {
@@ -92,20 +243,22 @@ impl ModelHost {
                 next: 0,
                 pending: None,
                 closed: false,
+                cleanup_failed: false,
             })),
+            settled: Arc::new(Condvar::new()),
             factory: Arc::new(RuntimeFactory),
         }
     }
     fn begin(&self) -> Result<u64, String> {
         let mut state = self.state.lock().map_err(|_| CANCELLED)?;
-        if state.closed {
+        if state.closed || state.cleanup_failed {
             return Err(CANCELLED.into());
         }
-        if state
-            .pending
-            .as_ref()
-            .is_some_and(|p| p.abort.is_none() && p.created.elapsed() > Duration::from_secs(15))
-        {
+        if state.pending.as_ref().is_some_and(|p| {
+            p.abort.is_none()
+                && p.current.is_none()
+                && p.created.elapsed() > Duration::from_secs(15)
+        }) {
             state.pending = None;
         }
         if state.pending.is_some() {
@@ -120,6 +273,8 @@ impl ModelHost {
         state.pending = Some(Ticket {
             id,
             abort: None,
+            current: None,
+            process_done: false,
             cancelled: false,
             created: std::time::Instant::now(),
         });
@@ -129,25 +284,72 @@ impl ModelHost {
         let mut state = self.state.lock().map_err(|_| CANCELLED)?;
         if let Some(pending) = state.pending.as_mut().filter(|p| p.id == ticket) {
             pending.cancelled = true;
-            if let Some(abort) = &pending.abort {
+            if let Some(current) = &pending.current {
+                current.store(false, Ordering::SeqCst);
+                if pending.process_done {
+                    state.pending = None;
+                    self.settled.notify_all();
+                }
+            } else if let Some(abort) = &pending.abort {
                 // Keep admission occupied until JoinHandle confirms the future
                 // (including callback/credential work) has actually been dropped.
                 abort.abort();
             } else {
                 state.pending = None;
+                self.settled.notify_all();
             }
         }
         Ok(())
     }
-    pub(crate) fn shutdown(&self) {
-        if let Ok(mut state) = self.state.lock() {
-            state.closed = true;
-            if let Some(pending) = state.pending.take() {
-                if let Some(abort) = pending.abort {
-                    abort.abort();
-                }
+    pub(crate) fn shutdown(&self) -> Result<(), String> {
+        let mut state = self.state.lock().map_err(|_| CANCELLED)?;
+        state.closed = true;
+        let owned = state
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.current.is_some());
+        if let Some(pending) = state.pending.as_mut() {
+            pending.cancelled = true;
+            if let Some(current) = &pending.current {
+                current.store(false, Ordering::SeqCst);
+            } else if let Some(abort) = &pending.abort {
+                abort.abort();
             }
         }
+        if !owned {
+            state.pending = None;
+            return (!state.cleanup_failed)
+                .then_some(())
+                .ok_or_else(|| "Model connection cleanup previously failed".into());
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while state
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.current.is_some() && !pending.process_done)
+        {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err("Model connection cleanup could not be confirmed".into());
+            }
+            let (next, wait) = self
+                .settled
+                .wait_timeout(state, remaining)
+                .map_err(|_| CANCELLED)?;
+            state = next;
+            if wait.timed_out()
+                && state
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.current.is_some() && !pending.process_done)
+            {
+                return Err("Model connection cleanup could not be confirmed".into());
+            }
+        }
+        state.pending = None;
+        (!state.cleanup_failed)
+            .then_some(())
+            .ok_or_else(|| "Model connection cleanup previously failed".into())
     }
     async fn run(
         &self,
@@ -162,6 +364,7 @@ impl ModelHost {
                 .filter(|p| {
                     p.id == ticket
                         && p.abort.is_none()
+                        && p.current.is_none()
                         && !p.cancelled
                         && p.created.elapsed() < Duration::from_secs(15)
                 })
@@ -187,6 +390,7 @@ impl ModelHost {
                 }
                 let cancelled = state.pending.as_ref().is_some_and(|p| p.cancelled) || state.closed;
                 state.pending = None;
+                owner.settled.notify_all();
                 if cancelled {
                     Err(CANCELLED.into())
                 } else {
@@ -196,6 +400,60 @@ impl ModelHost {
             let _ = send.send(result);
         });
         receive.await.map_err(|_| CANCELLED.to_owned())?
+    }
+    #[cfg(unix)]
+    async fn run_codex<V, F>(
+        &self,
+        ticket: u64,
+        work: impl FnOnce(Arc<AtomicBool>) -> Result<Catalog, CodexRunError> + Send + 'static,
+        validate: V,
+    ) -> Result<Catalog, String>
+    where
+        V: FnOnce() -> F,
+        F: std::future::Future<Output = Result<(), String>>,
+    {
+        let current = Arc::new(AtomicBool::new(true));
+        {
+            let mut state = self.state.lock().map_err(|_| CANCELLED)?;
+            let pending = state
+                .pending
+                .as_mut()
+                .filter(|pending| {
+                    pending.id == ticket
+                        && pending.abort.is_none()
+                        && pending.current.is_none()
+                        && !pending.cancelled
+                        && pending.created.elapsed() < Duration::from_secs(15)
+                })
+                .ok_or(CANCELLED)?;
+            pending.current = Some(current.clone());
+        }
+        let mut admission = CodexAdmission {
+            owner: self.clone(),
+            ticket,
+            retired: false,
+        };
+        let final_current = current.clone();
+        let owner = self.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            let finish = CodexFinish {
+                owner,
+                ticket,
+                complete: false,
+            };
+            finish.finish(work(current))
+        });
+        let result = task
+            .await
+            .map_err(|_| "Codex model process cleanup could not be confirmed".to_owned())?;
+        if result.is_ok() {
+            validate().await?;
+            if !final_current.load(Ordering::SeqCst) {
+                return Err(CANCELLED.into());
+            }
+        }
+        admission.retire()?;
+        result
     }
     fn cache(&self, _host: &str) -> Result<PathBuf, String> {
         let state = self.state.lock().map_err(|_| CANCELLED)?;
@@ -262,6 +520,54 @@ pub(crate) async fn agent_models_run<R: tauri::Runtime>(
 ) -> Result<Catalog, String> {
     let host = state.inner().clone();
     let controller = agents.inner().clone();
+    if request.integration == Some(buzz_agent_controller::HarnessIntegration::Codex) {
+        #[cfg(not(unix))]
+        return host
+            .run(ticket, async {
+                Err("Codex model discovery is not supported on this platform".into())
+            })
+            .await;
+        #[cfg(unix)]
+        {
+            if !matches!(request.action, Operation::Connect | Operation::Refresh) {
+                return host
+                    .run(ticket, async {
+                        Err("Codex model discovery supports Browse and Refresh only".into())
+                    })
+                    .await;
+            }
+            let edit = request.edit.clone();
+            let prepared = match edit.clone() {
+                Some(edit) => {
+                    controller
+                        .codex_model_context(request.id.as_deref(), request.expected_revision, edit)
+                        .await
+                }
+                None => Err("Agent draft is required for model lookup".into()),
+            };
+            let selected_model = request.selected_model.clone();
+            return match prepared {
+                Ok(context) => {
+                    let validation_controller = controller.clone();
+                    let validation_id = request.id.clone();
+                    let validation_revision = request.expected_revision;
+                    let validation_edit =
+                        edit.ok_or_else(|| "Agent draft is required for model lookup".to_owned())?;
+                    run_codex_request(&host, ticket, context, selected_model, move || async move {
+                        validation_controller
+                            .codex_model_context(
+                                validation_id.as_deref(),
+                                validation_revision,
+                                validation_edit,
+                            )
+                            .await
+                    })
+                    .await
+                }
+                Err(error) => host.run(ticket, async move { Err(error) }).await,
+            };
+        }
+    }
     if request.edit.as_ref().is_some_and(|e| {
         std::path::Path::new(&e.harness.command)
             .file_name()
@@ -292,6 +598,7 @@ pub(crate) async fn agent_models_run<R: tauri::Runtime>(
                         model_overridden: false,
                         disconnected: false,
                         tested_model: Some(tested_model),
+                        codex: None,
                     });
                 }
                 let models = crate::pi_models::fetch(context)
@@ -308,6 +615,7 @@ pub(crate) async fn agent_models_run<R: tauri::Runtime>(
                     model_overridden: false,
                     disconnected: false,
                     tested_model: None,
+                    codex: None,
                 })
             })
             .await;
@@ -351,6 +659,7 @@ pub(crate) async fn agent_models_run<R: tauri::Runtime>(
                         model_overridden: false,
                         disconnected: false,
                         tested_model: (!selection_overridden).then_some(tested_model),
+                        codex: None,
                     });
                 }
                 let model_overridden = context.model_overridden;
@@ -368,6 +677,7 @@ pub(crate) async fn agent_models_run<R: tauri::Runtime>(
                     model_overridden,
                     disconnected: false,
                     tested_model: None,
+                    codex: None,
                 })
             })
             .await;
@@ -438,6 +748,7 @@ pub(crate) async fn agent_models_run<R: tauri::Runtime>(
                 model_overridden,
                 disconnected: true,
                 tested_model: None,
+                codex: None,
             });
         }
         execute(
@@ -619,7 +930,128 @@ async fn execute(
         model_overridden,
         disconnected: false,
         tested_model: None,
+        codex: None,
     })
+}
+
+#[cfg(unix)]
+fn codex_readiness_failure(status: crate::codex_readiness::Readiness) -> CodexRunError {
+    if status.status == "cleanup-failed" {
+        CodexRunError::Transport(crate::codex_acp::Failure::Cleanup)
+    } else {
+        CodexRunError::Message(
+            match status.status {
+                "cancelled" => CANCELLED,
+                "timeout" => "Codex tool verification timed out; retry explicitly",
+                "output-limit" => "Codex tool verification exceeded its output limit",
+                "signed-out" => "Sign in with the selected Codex CLI, then retry",
+                "configuration-error" => "Codex configuration or login could not be read",
+                "adapter-incompatible" => "The selected Codex ACP adapter is incompatible",
+                "cli-incompatible" => "The selected Codex CLI is incompatible",
+                _ => "Codex tools could not be verified",
+            }
+            .into(),
+        )
+    }
+}
+
+#[cfg(unix)]
+fn codex_failure(failure: crate::codex_acp::Failure) -> String {
+    match failure {
+        crate::codex_acp::Failure::Cancelled => CANCELLED,
+        crate::codex_acp::Failure::Timeout => "Codex model discovery timed out; retry explicitly",
+        crate::codex_acp::Failure::OutputLimit => {
+            "Codex model discovery exceeded its safe output limit"
+        }
+        crate::codex_acp::Failure::Cleanup => "Codex model process cleanup could not be confirmed",
+        crate::codex_acp::Failure::Incompatible => {
+            "Codex model discovery could not be completed with the selected tools"
+        }
+    }
+    .into()
+}
+
+#[cfg(unix)]
+fn codex_catalog(discovery: crate::codex_models::Discovery) -> Catalog {
+    let models_known = discovery.models.is_some();
+    let models = discovery
+        .models
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| Model {
+            id: entry.id,
+            name: entry.name,
+        })
+        .collect();
+    let effort = discovery.effort.map(|effort| CodexEffort {
+        model: effort.model,
+        current: effort.current,
+        options: effort
+            .options
+            .into_iter()
+            .map(|entry| Model {
+                id: entry.id,
+                name: entry.name,
+            })
+            .collect(),
+    });
+    Catalog {
+        host: String::new(),
+        models,
+        model_overridden: false,
+        disconnected: false,
+        tested_model: None,
+        codex: Some(CodexCatalog {
+            models_known,
+            resolved_model: discovery.resolved_model,
+            resolved_effort: discovery.resolved_effort,
+            effort,
+        }),
+    }
+}
+
+#[cfg(unix)]
+fn discover_codex_context(
+    context: &buzz_agent_controller::codex::CodexContext,
+    selected_model: Option<&str>,
+    current: &impl Fn() -> bool,
+) -> Result<Catalog, CodexRunError> {
+    let binding =
+        crate::codex_readiness::check_tools(context, current).map_err(codex_readiness_failure)?;
+    let discovery =
+        crate::codex_models::discover(context, &binding.adapter_version, selected_model, current)
+            .map_err(CodexRunError::Transport)?;
+    Ok(codex_catalog(discovery))
+}
+
+#[cfg(unix)]
+async fn run_codex_request<V, F>(
+    host: &ModelHost,
+    ticket: u64,
+    context: buzz_agent_controller::codex::CodexContext,
+    selected_model: Option<String>,
+    revalidate: V,
+) -> Result<Catalog, String>
+where
+    V: FnOnce() -> F,
+    F: std::future::Future<Output = Result<buzz_agent_controller::codex::CodexContext, String>>,
+{
+    let expected = context.clone();
+    host.run_codex(
+        ticket,
+        move |current| {
+            discover_codex_context(&context, selected_model.as_deref(), &|| {
+                current.load(Ordering::SeqCst)
+            })
+        },
+        move || async move {
+            let latest = revalidate().await?;
+            (latest == expected)
+                .then_some(())
+                .ok_or_else(|| "Agent settings changed during Codex model discovery; retry".into())
+        },
+    )
+    .await
 }
 
 #[cfg(test)]

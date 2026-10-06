@@ -56,9 +56,26 @@ impl CodexContext {
     /// Resolve the device-selected adapter and CLI without falling back to an
     /// adapter-bundled Codex engine.
     pub fn installed(workspace: &Path) -> Result<Self> {
+        Self::installed_with(workspace, &BTreeMap::new())
+    }
+
+    /// Resolve the installed pair with the agent's effective environment. Only
+    /// the fixed Codex binding allowlist is admitted into child processes.
+    pub fn installed_with(workspace: &Path, overrides: &BTreeMap<String, String>) -> Result<Self> {
         let adapter = installed("codex-acp").ok_or("Codex ACP adapter not found")?;
         let cli = installed("codex").ok_or("Codex CLI not found")?;
-        Self::new(&adapter, &cli, workspace, &BTreeMap::new())
+        Self::new(&adapter, &cli, workspace, overrides)
+    }
+
+    /// Resolve from an agent's effective environment without importing keys
+    /// owned by other harnesses. `CODEX_CONFIG` remains an explicit error until
+    /// readiness and discovery can validate the same override semantics.
+    pub fn installed_for_agent(
+        workspace: &Path,
+        effective: &BTreeMap<String, String>,
+    ) -> Result<Self> {
+        let overrides = agent_environment(effective);
+        Self::installed_with(workspace, &overrides)
     }
 
     /// Resolve an explicit pair. This is the later per-agent binding seam and
@@ -114,8 +131,8 @@ impl CodexContext {
         environment.insert("INITIAL_AGENT_MODE".into(), "agent-full-access".into());
         let path = std::env::join_paths(
             [
-                interpreter.as_deref().and_then(Path::parent),
                 cli_interpreter.as_deref().and_then(Path::parent),
+                interpreter.as_deref().and_then(Path::parent),
                 cli.parent(),
                 adapter.parent(),
                 Some(Path::new("/usr/bin")),
@@ -162,6 +179,14 @@ impl CodexContext {
             .stdin(Stdio::null());
         command
     }
+}
+
+fn agent_environment(effective: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    effective
+        .iter()
+        .filter(|(key, _)| PASSTHROUGH.contains(&key.as_str()) || key.as_str() == "CODEX_CONFIG")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
 }
 
 fn bind(path: &Path, directories: &[PathBuf], label: &str) -> Result<BoundExecutable> {

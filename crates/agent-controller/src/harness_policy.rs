@@ -1,6 +1,6 @@
 //! Integration policy, shared by native validation and the editor snapshot.
 use crate::{agent_defaults::harness_kind, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Static integration rules, not authentication or model capability evidence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -22,7 +22,7 @@ pub struct HarnessConfigurationPolicy {
 
 /// Stable native integration identity. Editable executable names never grant
 /// managed policy or access semantics.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HarnessIntegration {
     /// Bundled Buzz Agent integration.

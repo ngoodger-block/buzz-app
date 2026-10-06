@@ -172,6 +172,13 @@ If no workspace is configured, edit the agent and set **Databricks workspace (HT
 under **Advanced → Model**. App maintainers can instead supply the nonsecret
 `DATABRICKS_HOST` build default below and rebuild the app.
 
+The native model-request service also has a disabled Codex discovery path keyed
+by the stable integration ID. It verifies the selected installed tools, opens a
+headless ACP session, and reports known, unknown, or empty model metadata plus
+reported effort choices for only the selected model. It does not send a prompt,
+persist a selection, or enable Codex creation. See
+[Codex model and effort discovery](codex-model-discovery.md).
+
 ### Nonsecret build defaults
 
 Native builds read these inputs from the repository-root, ignored `.env.local`,

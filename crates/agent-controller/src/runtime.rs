@@ -526,6 +526,19 @@ impl Controller {
         let agent = self.edited_agent(id, revision, edit)?;
         crate::pi::PiContext::new(&agent.harness, &agent.workspace, &agent.environment)
     }
+    /// Resolve a saved Codex draft only after its revision has been fenced.
+    pub fn codex_model_context(
+        &self,
+        id: &str,
+        revision: u64,
+        edit: AgentEdit,
+    ) -> Result<crate::codex::CodexContext> {
+        let agent = self.edited_agent(id, revision, edit)?;
+        crate::codex::CodexContext::installed_for_agent(
+            Path::new(&agent.workspace),
+            &agent.environment,
+        )
+    }
     pub fn pi_launch_context(
         &self,
         id: &str,
@@ -568,6 +581,14 @@ impl Controller {
         crate::pi::PiContext::new(
             &edit.harness,
             &edit.workspace,
+            &draft_environment(edit.environment),
+        )
+    }
+    /// Resolve an unsaved Codex draft against the same effective defaults used
+    /// by a later save or launch.
+    pub fn draft_codex_model_context(edit: AgentEdit) -> Result<crate::codex::CodexContext> {
+        crate::codex::CodexContext::installed_for_agent(
+            Path::new(&edit.workspace),
             &draft_environment(edit.environment),
         )
     }

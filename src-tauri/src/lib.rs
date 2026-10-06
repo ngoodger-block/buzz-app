@@ -13,6 +13,10 @@ use browser::{
 };
 mod agent_models;
 mod agents;
+#[cfg(unix)]
+mod codex_acp;
+#[cfg(unix)]
+mod codex_models;
 mod codex_readiness;
 mod deep_links;
 mod dock;
@@ -384,7 +388,7 @@ async fn plugin_recover(
 async fn update_restart<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(), String> {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        handle.state::<ModelHost>().shutdown();
+        handle.state::<ModelHost>().shutdown()?;
         handle.state::<Arc<CodexReadinessHost>>().shutdown()?;
         handle.state::<AgentHost>().shutdown()
     })
@@ -610,9 +614,12 @@ pub fn run() {
                 deep_links::focus_main(app);
             }
             if let tauri::RunEvent::ExitRequested { api, .. } = &event {
-                app.state::<ModelHost>().shutdown();
+                let models = app.state::<ModelHost>().shutdown();
                 let codex = app.state::<Arc<CodexReadinessHost>>().shutdown();
-                if codex.is_err() || app.state::<AgentHost>().shutdown().is_err() {
+                if models.is_err()
+                    || codex.is_err()
+                    || app.state::<AgentHost>().shutdown().is_err()
+                {
                     api.prevent_exit();
                     eprintln!("Agent or Codex readiness shutdown incomplete; app exit was refused");
                 }
@@ -623,7 +630,9 @@ pub fn run() {
                 if let Err(error) = app.state::<Terminals>().shutdown() {
                     eprintln!("Terminal shutdown failed: {error}");
                 }
-                app.state::<ModelHost>().shutdown();
+                if app.state::<ModelHost>().shutdown().is_err() {
+                    eprintln!("Model discovery shutdown could not be confirmed");
+                }
                 if app.state::<Arc<CodexReadinessHost>>().shutdown().is_err() {
                     eprintln!("Codex readiness shutdown could not be confirmed");
                 }

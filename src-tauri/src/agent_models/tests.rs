@@ -336,6 +336,7 @@ fn real_ipc_explicit_only_projection_overrides_retry_disconnect_and_gates() {
         let host = ModelHost::new(Ok(dir.join("store")));
         ModelHost {
             state: host.state,
+            settled: host.settled,
             factory: Arc::new(fake.clone()),
         }
     });
@@ -457,6 +458,7 @@ fn browse_uses_write_only_agent_defaults_workspace_and_filter_through_ipc() {
         let host = ModelHost::new(Ok(dir.join("store")));
         ModelHost {
             state: host.state,
+            settled: host.settled,
             factory: Arc::new(fake.clone()),
         }
     });
@@ -537,6 +539,7 @@ fn disconnect_recovers_an_inherited_workspace_without_revealing_it() {
         let host = ModelHost::new(Ok(dir.join("store")));
         ModelHost {
             state: host.state,
+            settled: host.settled,
             factory: Arc::new(fake.clone()),
         }
     });
@@ -591,6 +594,7 @@ fn native_discovery_preserves_absolute_harness_and_saved_or_draft_provider_overr
         let host = ModelHost::new(Ok(dir.join("store")));
         ModelHost {
             state: host.state,
+            settled: host.settled,
             factory: Arc::new(fake.clone()),
         }
     });
@@ -752,7 +756,7 @@ async fn cancel_fences_begin_run_and_waits_for_drop_without_blocking_stop() {
     host.cancel(ticket).unwrap(); // stale cancel cannot cancel next
     assert!(host.begin().is_err());
     host.cancel(next).unwrap();
-    host.shutdown();
+    let _ = host.shutdown();
     assert!(host.begin().is_err());
 }
 #[test]
@@ -804,6 +808,7 @@ fn real_ipc_refuses_linked_helper_namespace_before_opening_connection() {
         let host = ModelHost::new(Ok(dir.join("store")));
         ModelHost {
             state: host.state,
+            settled: host.settled,
             factory: Arc::new(fake.clone()),
         }
     });
@@ -829,6 +834,237 @@ fn real_ipc_refuses_linked_helper_namespace_before_opening_connection() {
     }
     assert!(fake.opened.lock().unwrap().is_empty());
     assert_eq!(std::fs::read_to_string(sentinel).unwrap(), "SYNTHETIC");
+}
+
+#[cfg(unix)]
+fn empty_catalog() -> Catalog {
+    Catalog {
+        host: String::new(),
+        models: Vec::new(),
+        model_overridden: false,
+        disconnected: false,
+        tested_model: None,
+        codex: None,
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_effort_wire_omits_unknown_current_and_keeps_known_empty_options() {
+    let catalog = codex_catalog(crate::codex_models::Discovery {
+        models: Some(Vec::new()),
+        resolved_model: None,
+        resolved_effort: None,
+        effort: Some(crate::codex_models::Effort {
+            model: "alpha".into(),
+            current: None,
+            options: Vec::new(),
+        }),
+    });
+    let value = serde_json::to_value(catalog).unwrap();
+    assert_eq!(value["codex"]["modelsKnown"], true);
+    assert_eq!(value["models"], json!([]));
+    assert_eq!(value["codex"]["effort"]["options"], json!([]));
+    assert!(value["codex"]["effort"].get("current").is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn codex_shutdown_retires_in_worker_without_executor_polling() {
+    let root = tempfile::tempdir().unwrap();
+    let host = ModelHost::new(Ok(root.path().into()));
+    let ticket = host.begin().unwrap();
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let running_host = host.clone();
+    let running = tokio::spawn(async move {
+        running_host
+            .run_codex(
+                ticket,
+                move |current| {
+                    let _ = started.send(());
+                    while current.load(Ordering::SeqCst) {
+                        std::thread::yield_now();
+                    }
+                    Err(CodexRunError::Transport(
+                        crate::codex_acp::Failure::Cancelled,
+                    ))
+                },
+                || async { Ok(()) },
+            )
+            .await
+    });
+    ready.await.unwrap();
+    assert!(host.shutdown().is_ok());
+    assert!(running.await.unwrap().is_err());
+    assert!(host.begin().is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn dropped_codex_ipc_releases_admission_after_worker_retirement() {
+    let root = tempfile::tempdir().unwrap();
+    let host = ModelHost::new(Ok(root.path().into()));
+    let ticket = host.begin().unwrap();
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let running_host = host.clone();
+    let running = tokio::spawn(async move {
+        running_host
+            .run_codex(
+                ticket,
+                move |_| {
+                    let _ = started.send(());
+                    released.recv().unwrap();
+                    Ok(empty_catalog())
+                },
+                || async { Ok(()) },
+            )
+            .await
+    });
+    ready.await.unwrap();
+    running.abort();
+    assert!(running.await.is_err());
+    release.send(()).unwrap();
+    let mut state = host.state.lock().unwrap();
+    while state.pending.is_some() {
+        state = host.settled.wait(state).unwrap();
+    }
+    drop(state);
+    let next = host.begin().unwrap();
+    host.cancel(next).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_cleanup_failure_is_sticky_and_refuses_new_admission() {
+    let root = tempfile::tempdir().unwrap();
+    let host = ModelHost::new(Ok(root.path().into()));
+    let ticket = host.begin().unwrap();
+    assert!(host
+        .run_codex(
+            ticket,
+            |_| { Err(CodexRunError::Transport(crate::codex_acp::Failure::Cleanup,)) },
+            || async { Ok(()) },
+        )
+        .await
+        .is_err());
+    assert!(host.begin().is_err());
+    assert!(host.shutdown().is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn changed_saved_context_is_rejected_after_held_codex_discovery() {
+    use buzz_agent_controller::codex::CodexContext;
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let tools = root.path().join("tools");
+    let first = root.path().join("first");
+    let second = root.path().join("second");
+    for directory in [&tools, &first, &second] {
+        std::fs::create_dir(directory).unwrap();
+    }
+    let adapter = tools.join("codex-acp");
+    std::fs::write(
+        &adapter,
+        r#"#!/bin/sh
+if [ "$1" = --version ]; then
+  printf '%s\n' '@agentclientprotocol/codex-acp 1.10.0'
+  exit 0
+fi
+read -r initialize
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"@agentclientprotocol/codex-acp","version":"1.10.0"}}}'
+read -r new
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"session"}}'
+read -r close
+printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{}}'
+read -r done
+"#,
+    )
+    .unwrap();
+    let cli = tools.join("codex");
+    std::fs::write(
+        &cli,
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'codex-cli 0.151.0\\n'; else printf 'Logged in\\n'; fi\n",
+    )
+    .unwrap();
+    for path in [&adapter, &cli] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let expected =
+        CodexContext::new(&adapter, &cli, &first, &std::collections::BTreeMap::new()).unwrap();
+    let changed =
+        CodexContext::new(&adapter, &cli, &second, &std::collections::BTreeMap::new()).unwrap();
+    let effective = Arc::new(Mutex::new(expected.clone()));
+    let host = ModelHost::new(Ok(root.path().join("models")));
+    let ticket = host.begin().unwrap();
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let validation_context = effective.clone();
+    let running_host = host.clone();
+    let running = tokio::spawn(async move {
+        run_codex_request(&running_host, ticket, expected, None, move || async move {
+            let _ = started.send(());
+            let _ = released.await;
+            Ok(validation_context.lock().unwrap().clone())
+        })
+        .await
+    });
+    ready.await.unwrap();
+    *effective.lock().unwrap() = changed;
+    release.send(()).unwrap();
+    assert!(running.await.unwrap().is_err());
+    let next = host.begin().unwrap();
+    host.cancel(next).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires the explicitly selected Codex adapter 1.10.0 and CLI 0.151.0; no prompt"]
+fn selected_production_codex_catalog_refresh_selection_and_cancel() {
+    use buzz_agent_controller::codex::CodexContext;
+
+    let workspace = tempfile::tempdir().unwrap();
+    let context = CodexContext::new(
+        std::path::Path::new("/tmp/buzz-codex-adapter-acceptance/node_modules/.bin/codex-acp"),
+        std::path::Path::new("/opt/homebrew/bin/codex"),
+        workspace.path(),
+        &std::collections::BTreeMap::new(),
+    )
+    .unwrap();
+    let initial = discover_codex_context(&context, None, &|| true).unwrap();
+    let metadata = initial.codex.as_ref().unwrap();
+    assert!(metadata.models_known);
+    assert!(!initial.models.is_empty());
+    assert!(metadata.resolved_model.is_some());
+    let selected = initial
+        .models
+        .iter()
+        .find(|model| {
+            metadata.resolved_model.as_deref() != Some(model.id.as_str())
+                && model.id.contains("codex")
+        })
+        .or_else(|| {
+            initial
+                .models
+                .iter()
+                .find(|model| metadata.resolved_model.as_deref() != Some(model.id.as_str()))
+        })
+        .unwrap_or(&initial.models[0])
+        .id
+        .clone();
+    let selected_result = discover_codex_context(&context, Some(&selected), &|| true).unwrap();
+    let selected_metadata = selected_result.codex.unwrap();
+    let effort = selected_metadata.effort.unwrap();
+    assert_eq!(effort.model, selected);
+    assert!(!effort.options.is_empty());
+    let refreshed = discover_codex_context(&context, None, &|| true).unwrap();
+    assert!(refreshed.codex.unwrap().models_known);
+    assert!(matches!(
+        discover_codex_context(&context, None, &|| false),
+        Err(CodexRunError::Message(message)) if message == CANCELLED
+    ));
 }
 
 #[tokio::test]

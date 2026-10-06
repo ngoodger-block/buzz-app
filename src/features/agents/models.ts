@@ -10,6 +10,28 @@ export interface ModelRequest {
   action: "connect" | "refresh" | "disconnect" | "test";
   /** Blank host/filter come from write-only Agent defaults; native supplies them. */
   inheritWorkspace?: boolean;
+  /** Native integration identity; executable basenames never grant policy. */
+  integration?:
+    | "buzz-agent"
+    | "goose"
+    | "pi"
+    | "codex"
+    | "external"
+    | undefined;
+  /** Selected model whose reported effort metadata should be returned. */
+  selectedModel?: string | undefined;
+}
+export interface CodexModelMetadata {
+  /** False means no usable model option was published; true with an empty
+   * catalog is a known-empty result. */
+  modelsKnown: boolean;
+  resolvedModel?: string;
+  resolvedEffort?: string;
+  effort?: {
+    model: string;
+    current?: string;
+    options: { id: string; name: string }[];
+  };
 }
 export interface ModelCatalog {
   host: string;
@@ -18,6 +40,8 @@ export interface ModelCatalog {
   disconnected: boolean;
   /** Canonical model that replied to an explicit connection test. */
   testedModel?: string;
+  /** Codex-only discovery evidence. */
+  codex?: CodexModelMetadata;
 }
 export interface ModelHost {
   begin(): Promise<number>;

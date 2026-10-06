@@ -8,7 +8,7 @@ import type {
   ControlSnapshot,
   HarnessConfigurationPolicy,
 } from "../../features/agents/control";
-import type { ModelCatalog } from "../../features/agents/models";
+import type { ModelCatalog, ModelRequest } from "../../features/agents/models";
 import {
   CheckCircleIcon,
   CircleNotchIcon,
@@ -32,10 +32,12 @@ export function AgentModelPicker({
   disabled = false,
   policy,
   providerSelection = 0,
+  integration,
 }: {
   /** Incremented by a committed dropdown choice; custom typing never loads. */
   providerSelection?: number;
   policy?: HarnessConfigurationPolicy | undefined;
+  integration?: ModelRequest["integration"];
   disabled?: boolean;
   /** Pi's signed-in providers, or null while its catalog is loading. */
   onPiProviders?(providers: string[] | null): void;
@@ -168,6 +170,7 @@ export function AgentModelPicker({
           host: "",
           filter: "",
           action: "test",
+          integration,
         },
         run.signal,
       );
@@ -213,6 +216,8 @@ export function AgentModelPicker({
           host: external ? "" : host,
           filter: external ? "" : filter,
           action,
+          integration,
+          selectedModel: draft.model || undefined,
           ...(!external &&
           ((inheritedWorkspace?.host && !host) ||
             (inheritedWorkspace?.filter && !filter))

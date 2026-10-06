@@ -3,12 +3,9 @@
 use buzz_agent_controller::{codex::CodexContext, ContainedProcess};
 use serde::Serialize;
 #[cfg(unix)]
-use serde_json::json;
-#[cfg(unix)]
 use std::{
-    io::{Read, Write},
+    io::Read,
     process::{Command, Stdio},
-    sync::mpsc,
 };
 use std::{
     path::Path,
@@ -29,12 +26,18 @@ const MIN_ADAPTER: (u64, u64, u64) = (1, 10, 0);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Readiness {
-    status: &'static str,
+    pub(crate) status: &'static str,
     message: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     adapter_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cli_version: Option<String>,
+}
+
+#[cfg(unix)]
+pub(crate) struct ToolBinding {
+    pub(crate) adapter_version: String,
+    cli_version: String,
 }
 
 impl Readiness {
@@ -302,65 +305,98 @@ fn resolution_failure(error: &str) -> Readiness {
 
 #[cfg(unix)]
 fn check_context(context: CodexContext, current: &impl Fn() -> bool) -> Result<Readiness, String> {
-    let adapter = match readiness_probe(context.adapter_command(), &["--version"], current) {
-        Ok(output) => output,
+    let binding = match check_tools(&context, current) {
+        Ok(binding) => binding,
         Err(status) => return Ok(status),
     };
+    if let Err(failure) = crate::codex_acp::initialize(&context, &binding.adapter_version, current)
+    {
+        return Ok(acp_failure(failure));
+    }
+    Ok(Readiness {
+        status: "binding-ready",
+        message: "CLI, login, and ACP binding verified. Codex agent creation is not enabled yet.",
+        adapter_version: Some(binding.adapter_version),
+        cli_version: Some(binding.cli_version),
+    })
+}
+
+#[cfg(unix)]
+pub(crate) fn check_tools(
+    context: &CodexContext,
+    current: &impl Fn() -> bool,
+) -> Result<ToolBinding, Readiness> {
+    let adapter = readiness_probe(context.adapter_command(), &["--version"], current)?;
     let adapter_version = parse_version(&adapter.stdout, &["@agentclientprotocol/codex-acp "]);
     let Some(adapter_version) = adapter_version else {
-        return Ok(Readiness::failed(
+        return Err(Readiness::failed(
                 "adapter-incompatible",
                 "The Codex ACP adapter is incompatible. Install @agentclientprotocol/codex-acp 1.10.0 or later.",
             ));
     };
     if !adapter.success || version_tuple(&adapter_version) < Some(MIN_ADAPTER) {
-        return Ok(Readiness::failed(
+        return Err(Readiness::failed(
                 "adapter-incompatible",
                 "The Codex ACP adapter is incompatible. Install @agentclientprotocol/codex-acp 1.10.0 or later.",
             ));
     }
-    let cli = match readiness_probe(context.cli_command(), &["--version"], current) {
-        Ok(output) => output,
-        Err(status) => return Ok(status),
-    };
+    let cli = readiness_probe(context.cli_command(), &["--version"], current)?;
     let Some(cli_version) = parse_version(&cli.stdout, &["codex-cli "]) else {
-        return Ok(Readiness::failed(
+        return Err(Readiness::failed(
             "cli-incompatible",
             "The selected Codex CLI version could not be verified. Update Codex, then check again.",
         ));
     };
     if !cli.success {
-        return Ok(Readiness::failed(
+        return Err(Readiness::failed(
             "cli-incompatible",
             "The selected Codex CLI version could not be verified. Update Codex, then check again.",
         ));
     }
-    let login = match readiness_probe(context.cli_command(), &["login", "status"], current) {
-        Ok(output) => output,
-        Err(status) => return Ok(status),
-    };
+    let login = readiness_probe(context.cli_command(), &["login", "status"], current)?;
     if !login.success {
         let combined = format!("{} {}", login.stdout, login.stderr).to_lowercase();
         if combined.contains("not logged in") || combined.contains("sign in") {
-            return Ok(Readiness::failed(
+            return Err(Readiness::failed(
                 "signed-out",
                 "Sign in with the selected Codex CLI, then check again.",
             ));
         }
-        return Ok(Readiness::failed(
+        return Err(Readiness::failed(
             "configuration-error",
             "Codex could not read its configuration or login. Repair it, then check again.",
         ));
     }
-    if let Err(status) = initialize(&context, &adapter_version, current) {
-        return Ok(status);
-    }
-    Ok(Readiness {
-        status: "binding-ready",
-        message: "CLI, login, and ACP binding verified. Codex agent creation is not enabled yet.",
-        adapter_version: Some(adapter_version),
-        cli_version: Some(cli_version),
+    Ok(ToolBinding {
+        adapter_version,
+        cli_version,
     })
+}
+
+#[cfg(unix)]
+fn acp_failure(failure: crate::codex_acp::Failure) -> Readiness {
+    use crate::codex_acp::Failure;
+    match failure {
+        Failure::Cancelled => {
+            Readiness::failed("cancelled", "Codex readiness check was cancelled.")
+        }
+        Failure::Timeout => Readiness::failed(
+            "timeout",
+            "The Codex ACP adapter check timed out. Try again.",
+        ),
+        Failure::OutputLimit => Readiness::failed(
+            "output-limit",
+            "The Codex ACP adapter returned too much output.",
+        ),
+        Failure::Cleanup => Readiness::failed(
+            "cleanup-failed",
+            "The Codex ACP adapter process could not be cleaned up.",
+        ),
+        Failure::Incompatible => Readiness::failed(
+            "adapter-incompatible",
+            "The Codex ACP adapter is incompatible with this binding.",
+        ),
+    }
 }
 
 #[cfg(unix)]
@@ -495,183 +531,6 @@ fn capture(
         }
         Ok(kept)
     })
-}
-
-#[cfg(unix)]
-fn initialize(
-    context: &CodexContext,
-    adapter_version: &str,
-    current: &impl Fn() -> bool,
-) -> Result<(), Readiness> {
-    let mut command = context.adapter_command();
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut process = ContainedProcess::spawn(&mut command).map_err(|_| {
-        Readiness::failed(
-            "adapter-incompatible",
-            "The Codex ACP adapter could not start with the selected CLI.",
-        )
-    })?;
-    let mut stdin = process.take_stdin().ok_or_else(|| {
-        Readiness::failed(
-            "adapter-incompatible",
-            "The Codex ACP adapter transport is unavailable.",
-        )
-    })?;
-    let stdout = process.take_stdout().ok_or_else(|| {
-        Readiness::failed(
-            "adapter-incompatible",
-            "The Codex ACP adapter transport is unavailable.",
-        )
-    })?;
-    let stderr = process.take_stderr().ok_or_else(|| {
-        Readiness::failed(
-            "adapter-incompatible",
-            "The Codex ACP adapter transport is unavailable.",
-        )
-    })?;
-    let overflow = Arc::new(AtomicBool::new(false));
-    let err = capture(stderr, overflow.clone());
-    let (send, receive) = mpsc::channel();
-    let stream_overflow = overflow.clone();
-    let out = std::thread::spawn(move || -> std::io::Result<()> {
-        let mut reader = stdout;
-        let mut total = 0usize;
-        let mut line = Vec::new();
-        let mut chunk = [0u8; 4096];
-        loop {
-            let count = match reader.read(&mut chunk) {
-                Ok(0) => return Ok(()),
-                Err(error) => return Err(error),
-                Ok(count) => count,
-            };
-            total = total.saturating_add(count);
-            if total > OUTPUT_LIMIT {
-                stream_overflow.store(true, Ordering::SeqCst);
-                return Ok(());
-            }
-            for byte in &chunk[..count] {
-                if *byte == b'\n' {
-                    if send.send(std::mem::take(&mut line)).is_err() {
-                        return Ok(());
-                    }
-                } else if line.len() < OUTPUT_LIMIT {
-                    line.push(*byte);
-                } else {
-                    stream_overflow.store(true, Ordering::SeqCst);
-                    return Ok(());
-                }
-            }
-        }
-    });
-    let request = json!({
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {"protocolVersion": 1, "clientCapabilities": {},
-            "clientInfo": {"name": "buzz-binding-readiness", "version": "0.0.0"}}
-    });
-    let wrote_request = writeln!(stdin, "{request}").is_ok();
-    let deadline = Instant::now() + PROBE_TIMEOUT;
-    let result = if !wrote_request {
-        Err(Readiness::failed(
-            "adapter-incompatible",
-            "The Codex ACP adapter transport closed.",
-        ))
-    } else {
-        loop {
-            if !current() {
-                break Err(Readiness::failed(
-                    "cancelled",
-                    "Codex readiness check was cancelled.",
-                ));
-            }
-            if overflow.load(Ordering::SeqCst) {
-                break Err(Readiness::failed(
-                    "output-limit",
-                    "The Codex ACP adapter returned too much output.",
-                ));
-            }
-            if Instant::now() >= deadline {
-                break Err(Readiness::failed(
-                    "timeout",
-                    "The Codex ACP adapter check timed out.",
-                ));
-            }
-            match receive.recv_timeout(Duration::from_millis(20)) {
-                Ok(line) => {
-                    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&line) else {
-                        break Err(Readiness::failed(
-                            "adapter-incompatible",
-                            "The Codex ACP adapter returned an invalid response.",
-                        ));
-                    };
-                    if value["id"] != 1 {
-                        continue;
-                    }
-                    let result = &value["result"];
-                    if value.get("error").is_some()
-                        || result["protocolVersion"] != 1
-                        || result["agentInfo"]["name"] != "@agentclientprotocol/codex-acp"
-                        || result["agentInfo"]["version"] != adapter_version
-                    {
-                        break Err(Readiness::failed(
-                            "adapter-incompatible",
-                            "The Codex ACP adapter is incompatible with this binding.",
-                        ));
-                    }
-                    break Ok(());
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    break Err(Readiness::failed(
-                        "adapter-incompatible",
-                        "The Codex ACP adapter exited before binding was verified.",
-                    ))
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => match process.alive() {
-                    Ok(false) => {
-                        break Err(Readiness::failed(
-                            "adapter-incompatible",
-                            "The Codex ACP adapter exited before binding was verified.",
-                        ));
-                    }
-                    Ok(true) => {}
-                    Err(_) => {
-                        break Err(Readiness::failed(
-                            "cleanup-failed",
-                            "The Codex ACP adapter process could not be cleaned up.",
-                        ));
-                    }
-                },
-            }
-        }
-    };
-    drop(stdin);
-    if process.stop().is_err() {
-        return Err(Readiness::failed(
-            "cleanup-failed",
-            "The Codex ACP adapter process could not be cleaned up.",
-        ));
-    }
-    let out_result = out.join();
-    let err_result = err.join();
-    if overflow.load(Ordering::SeqCst) {
-        return Err(Readiness::failed(
-            "output-limit",
-            "The Codex ACP adapter returned excessive output.",
-        ));
-    }
-    if out_result.is_err()
-        || out_result.is_ok_and(|result| result.is_err())
-        || err_result.is_err()
-        || err_result.is_ok_and(|result| result.is_err())
-    {
-        return Err(Readiness::failed(
-            "check-failed",
-            "The Codex ACP adapter response could not be read.",
-        ));
-    }
-    result
 }
 
 #[cfg(unix)]

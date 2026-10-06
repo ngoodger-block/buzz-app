@@ -82,6 +82,38 @@ fn adapter_launches_the_exact_selected_cli_with_the_isolated_path() {
 }
 
 #[test]
+fn adapter_uses_the_cli_bound_interpreter_when_interpreters_differ() {
+    let root = tempfile::tempdir().unwrap();
+    let adapter_bin = root.path().join("adapter-bin");
+    let adapter_runtime = root.path().join("adapter-runtime");
+    let cli_bin = root.path().join("cli-bin");
+    let workspace = root.path().join("workspace");
+    for directory in [&adapter_bin, &adapter_runtime, &cli_bin, &workspace] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    let adapter = adapter_bin.join("codex-acp");
+    let cli = cli_bin.join("codex");
+    let adapter_node = adapter_runtime.join("node");
+    tool(
+        &adapter_node,
+        "#!/bin/sh\ncase \"$1\" in */codex-acp) ;; *) exit 9 ;; esac\nexec /bin/sh \"$@\"\n",
+    );
+    tool(
+        &adapter,
+        &format!("#!{}\n\"$CODEX_PATH\" --version\n", adapter_node.display()),
+    );
+    tool(
+        &adapter_bin.join("node"),
+        "#!/bin/sh\nexec /bin/sh \"$@\"\n",
+    );
+    tool(&cli, "#!/usr/bin/env node\nprintf cli-interpreter\n");
+    let context = CodexContext::new(&adapter, &cli, &workspace, &BTreeMap::new()).unwrap();
+    let output = context.adapter_command().output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"cli-interpreter");
+}
+
+#[test]
 fn rejects_unsupported_or_unresolved_interpreters_and_context() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
@@ -122,5 +154,19 @@ fn binding_equality_fences_path_workspace_and_configuration_context() {
             &BTreeMap::from([("CODEX_HOME".into(), second.display().to_string())]),
         )
         .unwrap()
+    );
+}
+
+#[test]
+fn agent_context_excludes_defaults_owned_by_other_harnesses() {
+    let effective = BTreeMap::from([
+        ("DATABRICKS_HOST".into(), "https://private.example".into()),
+        ("GOOSE_PROVIDER".into(), "private-provider".into()),
+        ("OPENAI_API_KEY".into(), "private-key".into()),
+        ("CODEX_HOME".into(), "/tmp/codex-home".into()),
+    ]);
+    assert_eq!(
+        agent_environment(&effective),
+        BTreeMap::from([("CODEX_HOME".into(), "/tmp/codex-home".into())])
     );
 }

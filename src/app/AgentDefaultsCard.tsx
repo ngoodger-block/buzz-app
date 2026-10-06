@@ -434,6 +434,8 @@ function ModelChoice({
               ? (state.data?.databricksDefaults?.filter ?? "")
               : "",
           action: "connect",
+          integration: harness.id,
+          selectedModel: current.model || undefined,
           ...(environmentHost || environmentFilter
             ? { inheritWorkspace: true }
             : {}),
