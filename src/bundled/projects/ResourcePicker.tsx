@@ -362,14 +362,18 @@ export function ResourcePicker({
                       onClick={() => choose(item)}
                       label={
                         <span className="flex flex-col whitespace-normal">
-                          <MatchedLabel
-                            label={item.label}
-                            positions={
-                              query && match && match.rank <= 3
-                                ? match.positions
-                                : undefined
-                            }
-                          />
+                          {/* One element, so the flex column keeps the
+                              underlined title on one line. */}
+                          <span>
+                            <MatchedLabel
+                              label={item.label}
+                              positions={
+                                query && match && match.rank <= 3
+                                  ? match.positions
+                                  : undefined
+                              }
+                            />
+                          </span>
                           <small className="text-caption text-subtle">
                             {checking?.id === item.id && !checking.failed
                               ? "Checking…"

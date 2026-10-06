@@ -18,19 +18,14 @@ export function MatchedLabel({
     if (last?.match === match) last.text += char;
     else runs.push({ text: char, match });
   });
-  // One element, so a flex parent lays the runs out as one line of text.
-  return (
-    <span>
-      {runs.map(({ text, match }, index) =>
-        match ? (
-          // biome-ignore lint/suspicious/noArrayIndexKey: runs are positional.
-          <mark key={index} className="search-match">
-            {text}
-          </mark>
-        ) : (
-          text
-        ),
-      )}
-    </span>
+  return runs.map(({ text, match }, index) =>
+    match ? (
+      // biome-ignore lint/suspicious/noArrayIndexKey: runs are positional.
+      <mark key={index} className="search-match">
+        {text}
+      </mark>
+    ) : (
+      text
+    ),
   );
 }

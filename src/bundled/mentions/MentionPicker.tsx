@@ -308,10 +308,14 @@ export function MentionPicker({
                     onClick={() => chooseRecipient(recipient)}
                     label={
                       <span className="flex flex-col whitespace-normal">
-                        <MatchedLabel
-                          label={label}
-                          positions={matched(label)}
-                        />
+                        {/* One element, so the flex column keeps the
+                            underlined name on one line. */}
+                        <span>
+                          <MatchedLabel
+                            label={label}
+                            positions={matched(label)}
+                          />
+                        </span>
                         {reason && <small>{reason}</small>}
                         {!members?.includes(recipient.pubkey) && (
                           <small className="text-caption text-subtle">
