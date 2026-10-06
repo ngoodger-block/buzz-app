@@ -22,6 +22,18 @@ export interface RestartDiffEntry {
   field: string;
   change: RestartChange;
 }
+export type HarnessIntegration =
+  | "buzz-agent"
+  | "goose"
+  | "pi"
+  | "codex"
+  | "external";
+export type AiConfiguration =
+  | { mode: "default" }
+  | {
+      mode: "advanced";
+      effort: { kind: "value"; value: string } | { kind: "unsupported" };
+    };
 export interface AgentView {
   id: string;
   pubkey: string;
@@ -34,10 +46,14 @@ export interface AgentView {
   sessionPolicy: "channel" | "thread" | null;
   workspace: string;
   harness: {
+    /** Stable native owner; absent preserves legacy/custom harness behavior. */
+    integration?: HarnessIntegration;
     command: string;
     args: string[];
     model: string;
     provider: string;
+    /** Proof-backed managed selection; the current editor keeps this read-only. */
+    configuration?: AiConfiguration;
     environmentKeys: string[];
     databricks?: { host: string; filter: string } | null;
   };
@@ -93,7 +109,7 @@ export interface ControlSnapshot {
   /** Native executable presence and editing suggestions, not sign-in or execution evidence.
    * Optional so an older running native host retains editable custom values. */
   harnessOptions?: {
-    id?: "buzz-agent" | "goose" | "pi" | "codex" | "external";
+    id?: HarnessIntegration;
     command: string;
     label: string;
     available?: boolean;
@@ -127,10 +143,10 @@ export interface ControlSnapshot {
 export interface HarnessConfigurationPolicy {
   authentication: "provider" | "harnessWithOverrides" | "external";
   provider: "selector" | "discovered" | "external";
-  /** Legacy inheritance is not managed Default. Current integrations admit neither mode yet. */
+  /** Legacy inheritance is distinct from managed Default. */
   supportedModes: ("default" | "advanced")[];
   model: "optional" | "withProvider";
-  effortDiscovery: "unknown";
+  effortDiscovery: "unknown" | "modelSpecific";
   selectorEnvironment: { model: string; provider: string } | null;
 }
 export interface AgentDefaultSettings {
@@ -234,6 +250,8 @@ export interface AgentControlHost {
     requestId: string,
     destination: string,
     owner: string,
+    edit: AgentEdit,
+    validationProof?: string,
   ): Promise<{ id: string; pubkey: string }>;
   commitCreate?(
     requestId: string,
@@ -642,6 +660,7 @@ export function createAgentControl(
                   requestId,
                   destination,
                   owner,
+                  edit,
                 );
                 id = prepared.id;
                 const result = await communityRequest<{ auth: string[] }>(

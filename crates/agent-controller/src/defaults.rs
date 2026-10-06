@@ -22,6 +22,9 @@ impl BuildDefaults {
         env: &BTreeMap<String, String>,
     ) -> HarnessEdit {
         let mut harness = saved.clone();
+        if harness.integration == Some(crate::HarnessIntegration::Codex) {
+            return harness;
+        }
         if Path::new(&harness.command)
             .file_name()
             .and_then(|s| s.to_str())
@@ -123,6 +126,13 @@ pub(crate) fn selectors<'a>(
     resolved: &'a HarnessEdit,
     env: &'a BTreeMap<String, String>,
 ) -> Selectors<'a> {
+    if resolved.integration == Some(crate::HarnessIntegration::Codex) {
+        return Selectors {
+            keys: None,
+            model: (!resolved.model.is_empty()).then_some(resolved.model.as_str()),
+            provider: None,
+        };
+    }
     let keys = crate::HarnessConfigurationPolicy::for_command(&resolved.command)
         .selector_environment
         .map(|keys| (keys.model, keys.provider));

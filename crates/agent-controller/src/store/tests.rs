@@ -17,10 +17,12 @@ pub(crate) fn fixture() -> Agent {
         // Only validated/serialized here; never used to launch a harness.
         workspace: std::env::current_dir().unwrap().to_str().unwrap().into(),
         harness: HarnessEdit {
+            integration: None,
             databricks: None,
             command: "buzz-agent".into(),
             args: vec![],
             model: "test-model".into(),
+            configuration: None,
             provider: "test-provider".into(),
         },
         environment: BTreeMap::from([("TEST_TOKEN".into(), "secret-env-value".into())]),
@@ -44,6 +46,77 @@ fn edit() -> AgentEdit {
         harness: fixture().harness,
         environment: BTreeMap::new(),
     }
+}
+
+#[test]
+fn native_codex_configuration_round_trips_through_revision_checked_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path().to_owned()).unwrap();
+    let mut agent = fixture();
+    agent.harness.integration = Some(crate::HarnessIntegration::Codex);
+    agent.harness.command = "/tools/codex-acp".into();
+    agent.harness.model.clear();
+    agent.harness.provider.clear();
+    agent.harness.configuration = Some(crate::AiConfiguration::Default);
+    agent.environment.clear();
+    store.insert(vec![agent.clone()]).unwrap();
+    drop(store);
+    let mut store = Store::open(dir.path().to_owned()).unwrap();
+
+    let snapshot = store.snapshot().unwrap();
+    assert_eq!(
+        snapshot.agents[0].harness.integration,
+        Some(crate::HarnessIntegration::Codex)
+    );
+    assert_eq!(
+        snapshot.agents[0].harness.configuration,
+        Some(crate::AiConfiguration::Default)
+    );
+
+    let mut advanced = edit();
+    advanced.harness = agent.harness.clone();
+    advanced.harness.model = "gpt-6".into();
+    advanced.harness.configuration = Some(crate::AiConfiguration::Advanced {
+        effort: crate::EffortSelection::Value {
+            value: "high".into(),
+        },
+    });
+    store.save(&agent.id, agent.revision, advanced).unwrap();
+    let saved = store.agents().unwrap().remove(0);
+    assert_eq!(saved.revision, 2);
+    assert!(matches!(
+        saved.harness.configuration,
+        Some(crate::AiConfiguration::Advanced {
+            effort: crate::EffortSelection::Value { ref value }
+        }) if value == "high"
+    ));
+}
+
+#[test]
+fn native_codex_structure_rejects_inheritance_custom_args_and_foreign_environment() {
+    let mut agent = fixture();
+    agent.harness.integration = Some(crate::HarnessIntegration::Codex);
+    agent.harness.command = "/tools/codex-acp".into();
+    agent.harness.model.clear();
+    agent.harness.provider.clear();
+    agent.harness.configuration = None;
+    agent.environment.clear();
+    assert!(agent
+        .validate()
+        .unwrap_err()
+        .contains("Default or Advanced"));
+
+    agent.harness.configuration = Some(crate::AiConfiguration::Default);
+    agent.harness.args = vec!["--config".into()];
+    assert!(agent
+        .validate()
+        .unwrap_err()
+        .contains("custom adapter arguments"));
+    agent.harness.args.clear();
+    agent
+        .environment
+        .insert("OPENAI_API_KEY".into(), "secret".into());
+    assert!(agent.validate().unwrap_err().contains("does not permit"));
 }
 #[test]
 fn snapshot_withholds_model_and_provider_environment_values() {
@@ -811,4 +884,42 @@ fn protection_defaults_revision_limit_preserves_saved_bytes() {
         store.launch_protection_snapshot().unwrap_err(),
         "Invalid protection revision"
     );
+}
+
+#[test]
+fn pending_create_survives_reopen_and_finishes_with_one_atomic_record_write() {
+    let root = tempfile::tempdir().unwrap();
+    let mut agent = fixture();
+    agent.credential_id = agent.id.clone();
+    let pending = PendingCreateRecovery {
+        request_id: "123e4567-e89b-12d3-a456-426614174000".into(),
+        agent_id: agent.id.clone(),
+        pubkey: agent.pubkey.clone(),
+        destination: agent.relay_url.clone(),
+        owner: "cd".repeat(32),
+        commitment: "ef".repeat(32),
+    };
+    let mut store = Store::open(root.path().into()).unwrap();
+    store.stage_pending_create(pending.clone()).unwrap();
+    drop(store);
+
+    let mut reopened = Store::open(root.path().into()).unwrap();
+    assert_eq!(reopened.pending_create().unwrap(), Some(pending.clone()));
+    let mut changed = pending.clone();
+    changed.commitment = "ab".repeat(32);
+    assert_eq!(
+        reopened.stage_pending_create(changed).unwrap_err(),
+        "Another agent creation requires recovery first"
+    );
+    reopened
+        .finish_pending_create(&pending, agent.clone())
+        .unwrap();
+    drop(reopened);
+
+    let reopened = Store::open(root.path().into()).unwrap();
+    assert!(reopened.pending_create().unwrap().is_none());
+    assert_eq!(reopened.agents().unwrap()[0].id, agent.id);
+    let saved: Value =
+        serde_json::from_slice(&fs::read(root.path().join("agents.json")).unwrap()).unwrap();
+    assert!(saved.get("pendingCreate").is_none());
 }

@@ -14,8 +14,14 @@ export function nativeAgentControlHost(): AgentControlHost | null {
       run: (ticket) => invoke("codex_readiness_run", { ticket }),
       cancel: (ticket) => invoke("codex_readiness_cancel", { ticket }),
     },
-    prepareCreate: (requestId, destination, owner) =>
-      invoke("agent_control_create_prepare", { requestId, destination, owner }),
+    prepareCreate: (requestId, destination, owner, edit, validationProof) =>
+      invoke("agent_control_create_prepare", {
+        requestId,
+        destination,
+        owner,
+        edit,
+        validationProof,
+      }),
     commitCreate: (requestId, edit, auth) =>
       invoke("agent_control_create_commit", { requestId, edit, auth }),
     publishProfile: (id) => invoke("agent_control_creation_profile", { id }),

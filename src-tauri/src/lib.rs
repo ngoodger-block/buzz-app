@@ -13,11 +13,10 @@ use browser::{
 };
 mod agent_models;
 mod agents;
-#[cfg(unix)]
 mod codex_acp;
-#[cfg(unix)]
 mod codex_models;
 mod codex_readiness;
+mod codex_validation;
 mod deep_links;
 mod dock;
 #[cfg(test)]
@@ -52,6 +51,10 @@ use agent_models::{agent_models_begin, agent_models_cancel, agent_models_run, Mo
 use codex_readiness::{
     codex_readiness_begin, codex_readiness_cancel, codex_readiness_run, Host as CodexReadinessHost,
 };
+use codex_validation::{
+    codex_validation_begin, codex_validation_cancel, codex_validation_run,
+    Host as CodexValidationHost,
+};
 mod goose_models;
 mod harness_setup;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -59,7 +62,8 @@ mod managed_pi;
 mod pi_models;
 use agents::{
     agent_control_action, agent_control_attach_mention, agent_control_clone_settings,
-    agent_control_create_authorize, agent_control_create_commit, agent_control_create_prepare,
+    agent_control_create_authorize, agent_control_create_commit, agent_control_create_discard,
+    agent_control_create_prepare, agent_control_create_recovery, agent_control_create_resume,
     agent_control_creation_profile, agent_control_delete, agent_control_import_commit,
     agent_control_import_preview, agent_control_local_clone_settings, agent_control_log_challenge,
     agent_control_read_log, agent_control_save, agent_control_save_defaults,
@@ -390,6 +394,7 @@ async fn update_restart<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<(
     tauri::async_runtime::spawn_blocking(move || {
         handle.state::<ModelHost>().shutdown()?;
         handle.state::<Arc<CodexReadinessHost>>().shutdown()?;
+        handle.state::<Arc<CodexValidationHost>>().shutdown()?;
         handle.state::<AgentHost>().shutdown()
     })
     .await
@@ -449,6 +454,9 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         agent_control_create_prepare,
         agent_control_create_authorize,
         agent_control_create_commit,
+        agent_control_create_recovery,
+        agent_control_create_resume,
+        agent_control_create_discard,
         agent_control_creation_profile,
         agent_control_snapshot,
         agent_control_log_challenge,
@@ -469,6 +477,9 @@ fn commands<R: tauri::Runtime>() -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Sen
         agent_models_begin,
         agent_models_cancel,
         agent_models_run,
+        codex_validation_begin,
+        codex_validation_cancel,
+        codex_validation_run,
         codex_readiness_begin,
         codex_readiness_cancel,
         codex_readiness_run,
@@ -558,6 +569,7 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("buzz-media", relay::media_protocol)
         .manage(Imports::default())
         .manage(Arc::new(CodexReadinessHost::default()))
+        .manage(Arc::new(CodexValidationHost::default()))
         .manage(HarnessSetup::default())
         .manage(Terminals::default())
         .manage(OAuthCallbackHost::default())
@@ -616,8 +628,10 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { api, .. } = &event {
                 let models = app.state::<ModelHost>().shutdown();
                 let codex = app.state::<Arc<CodexReadinessHost>>().shutdown();
+                let validation = app.state::<Arc<CodexValidationHost>>().shutdown();
                 if models.is_err()
                     || codex.is_err()
+                    || validation.is_err()
                     || app.state::<AgentHost>().shutdown().is_err()
                 {
                     api.prevent_exit();
@@ -635,6 +649,9 @@ pub fn run() {
                 }
                 if app.state::<Arc<CodexReadinessHost>>().shutdown().is_err() {
                     eprintln!("Codex readiness shutdown could not be confirmed");
+                }
+                if app.state::<Arc<CodexValidationHost>>().shutdown().is_err() {
+                    eprintln!("Codex validation shutdown could not be confirmed");
                 }
                 if app.state::<AgentHost>().shutdown().is_err() {
                     eprintln!("Native agent shutdown could not be confirmed");

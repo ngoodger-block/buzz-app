@@ -465,10 +465,12 @@ mod tests {
                     session_policy: Some(None),
                     workspace: dir.path().display().to_string(),
                     harness: HarnessEdit {
+                        integration: None,
                         command: command.clone(),
                         args: vec!["acp".into()],
                         provider: provider.into(),
                         model: String::new(),
+                        configuration: None,
                         databricks: None,
                     },
                     environment,

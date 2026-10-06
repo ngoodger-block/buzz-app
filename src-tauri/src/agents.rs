@@ -4,6 +4,7 @@ use buzz_agent_controller::{
     LegacySource, NewAgent, PlatformCredentials, ProcessStatus, RuntimeBundle, Store,
 };
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -294,14 +295,30 @@ struct LogChallenge {
 
 struct PendingStart {
     ticket: u64,
+    current: Arc<AtomicBool>,
     workspace: Option<String>,
     status: ProcessStatus,
     revision: u64,
     replay_floor: Option<u64>,
+    codex: Option<PendingCodex>,
+}
+
+#[derive(Clone)]
+struct PendingCodex {
+    owner: Arc<crate::codex_readiness::Host>,
+    ticket: u64,
 }
 struct MentionReplay {
     revision: u64,
     floor: u64,
+}
+
+struct PendingCreate {
+    request_id: String,
+    destination: String,
+    owner: String,
+    prepared: Arc<NewAgent>,
+    admission: Option<crate::codex_validation::Admission>,
 }
 
 struct Host {
@@ -314,15 +331,23 @@ struct Host {
     closed: bool,
     credentials: Arc<dyn Credentials>,
     starts: BTreeMap<String, PendingStart>,
+    codex_retiring: BTreeMap<String, PendingCodex>,
     queued: BTreeMap<String, Option<MentionReplay>>,
     next_start: u64,
     /// Agents with an explicit Start/Stop since open; queued restore skips them.
     acted: BTreeSet<String>,
     profiles: BTreeMap<String, Arc<tokio::sync::Mutex<()>>>,
     log_challenges: BTreeMap<String, LogChallenge>,
-    creating: Option<(String, Arc<NewAgent>)>,
+    creating: Option<PendingCreate>,
+    codex_cleanup_failed: bool,
+    #[cfg(test)]
+    codex_context: Option<Arc<CodexContextResolver>>,
     legacy_check: fn() -> Result<(), String>,
 }
+#[cfg(test)]
+type CodexContextResolver = dyn Fn(&str, u64) -> Result<Option<buzz_agent_controller::codex::CodexContext>, String>
+    + Send
+    + Sync;
 impl Host {
     fn open(
         root: PathBuf,
@@ -369,12 +394,16 @@ impl Host {
             closed: false,
             credentials,
             starts: BTreeMap::new(),
+            codex_retiring: BTreeMap::new(),
             queued,
             next_start: 0,
             acted: BTreeSet::new(),
             profiles: BTreeMap::new(),
             log_challenges: BTreeMap::new(),
             creating: None,
+            codex_cleanup_failed: false,
+            #[cfg(test)]
+            codex_context: None,
             legacy_check: refuse_legacy,
         })
     }
@@ -399,7 +428,7 @@ impl Host {
         Ok(snapshot)
     }
     fn action(&mut self, id: &str, action: Action) -> Result<Snapshot, String> {
-        self.starts.remove(id);
+        self.cancel_start(id);
         self.queued.remove(id);
         self.acted.insert(id.to_owned());
         self.controller.action(id, action)?;
@@ -410,6 +439,42 @@ impl Host {
             return Err(START_CANCELLED.into());
         }
         self.starts.remove(id).ok_or_else(|| START_CANCELLED.into())
+    }
+    fn cancel_start(&mut self, id: &str) {
+        if let Some(pending) = self.starts.remove(id) {
+            pending.current.store(false, Ordering::SeqCst);
+            if let Some(codex) = pending.codex {
+                codex.owner.cancel_owned(codex.ticket);
+                self.codex_retiring.insert(id.to_owned(), codex);
+            }
+        }
+    }
+    fn check_codex_retirement(&mut self, id: &str) -> Result<(), String> {
+        let Some(pending) = self.codex_retiring.get(id) else {
+            return Ok(());
+        };
+        match pending.owner.retirement() {
+            Ok(true) => {
+                self.codex_retiring.remove(id);
+                Ok(())
+            }
+            Ok(false) => Err("Previous Codex readiness cleanup is still in progress".into()),
+            Err(error) => {
+                self.codex_cleanup_failed = true;
+                Err(error)
+            }
+        }
+    }
+    fn codex_launch_context(
+        &self,
+        id: &str,
+        revision: u64,
+    ) -> Result<Option<buzz_agent_controller::codex::CodexContext>, String> {
+        #[cfg(test)]
+        if let Some(resolve) = &self.codex_context {
+            return resolve(id, revision);
+        }
+        self.controller.codex_launch_context(id, revision)
     }
     fn attach_mention(&mut self, id: &str, revision: u64, floor: u64) -> Result<(), String> {
         let current = self.controller.snapshot()?;
@@ -448,7 +513,24 @@ impl Host {
     }
     fn shutdown(&mut self) -> Result<(), String> {
         self.closed = true; // Fence queued commands before shutdown starts.
-        self.controller.shutdown()
+        for (id, pending) in std::mem::take(&mut self.starts) {
+            pending.current.store(false, Ordering::SeqCst);
+            if let Some(codex) = pending.codex {
+                codex.owner.cancel_owned(codex.ticket);
+                self.codex_retiring.insert(id, codex);
+            }
+        }
+        let mut cleanup_error = None;
+        for pending in self.codex_retiring.values() {
+            if let Err(error) = pending.owner.shutdown() {
+                cleanup_error.get_or_insert(error);
+            }
+        }
+        let controller = self.controller.shutdown();
+        match (cleanup_error, controller) {
+            (Some(error), _) => Err(error),
+            (None, result) => result,
+        }
     }
     fn log_challenge(
         &mut self,
@@ -672,7 +754,7 @@ impl AgentHost {
                 .map(|(id, _)| id.clone())
                 .collect();
             for id in cancelled {
-                host.starts.remove(&id);
+                host.cancel_start(&id);
                 host.controller.record_error(
                     &id,
                     "Start cancelled by Disconnect; reconnect and retry Start".into(),
@@ -760,6 +842,26 @@ impl AgentHost {
         })
         .await
     }
+    pub(crate) async fn codex_create_validation(
+        &self,
+        edit: AgentEdit,
+    ) -> Result<Option<buzz_agent_controller::CodexValidationDraft>, String> {
+        run(self.clone(), move |host| {
+            host.controller.codex_create_validation(edit)
+        })
+        .await
+    }
+    pub(crate) async fn codex_edit_validation(
+        &self,
+        id: String,
+        revision: u64,
+        edit: AgentEdit,
+    ) -> Result<Option<buzz_agent_controller::CodexValidationDraft>, String> {
+        run(self.clone(), move |host| {
+            host.controller.codex_edit_validation(&id, revision, edit)
+        })
+        .await
+    }
     pub(crate) fn shutdown(&self) -> Result<(), String> {
         self.1.store(true, Ordering::SeqCst);
         let mut state = self
@@ -822,12 +924,50 @@ pub(crate) async fn agent_control_snapshot(
 #[tauri::command]
 pub(crate) async fn agent_control_save(
     state: tauri::State<'_, AgentHost>,
+    validation: tauri::State<'_, Arc<crate::codex_validation::Host>>,
     id: String,
     expected_revision: u64,
     edit: AgentEdit,
+    validation_request_id: Option<String>,
+    validation_proof: Option<String>,
 ) -> Result<Snapshot, String> {
+    let validation = validation.inner().clone();
     save_and_restart(state.inner().clone(), move |host| {
-        host.controller.save(&id, expected_revision, edit).map(drop)
+        let draft = host
+            .controller
+            .codex_edit_validation(&id, expected_revision, edit.clone())?;
+        let admission = match draft {
+            Some(draft) => {
+                let request = validation_request_id
+                    .as_deref()
+                    .ok_or("Validate this Codex change before saving")?;
+                let admission = crate::codex_validation::edit_admission(
+                    request,
+                    &id,
+                    expected_revision,
+                    Some(draft),
+                )?
+                .ok_or("Validate this Codex change before saving")?;
+                let proof = validation_proof
+                    .as_deref()
+                    .ok_or("Validate this Codex change before saving")?;
+                validation.consume(proof, &admission)?;
+                Some(admission)
+            }
+            None => {
+                if validation_request_id.is_some() || validation_proof.is_some() {
+                    return Err("Codex validation does not match this save".into());
+                }
+                None
+            }
+        };
+        match admission {
+            Some(admission) => host
+                .controller
+                .save_codex_validated(&id, expected_revision, edit, admission.draft())
+                .map(drop),
+            None => host.controller.save(&id, expected_revision, edit).map(drop),
+        }
     })
     .await
 }
@@ -943,7 +1083,7 @@ pub(crate) async fn agent_control_delete(
     expected_revision: u64,
 ) -> Result<Snapshot, String> {
     run(state.inner().clone(), move |host| {
-        host.starts.remove(&id);
+        host.cancel_start(&id);
         host.queued.remove(&id);
         host.acted.insert(id.clone());
         host.controller.delete(&id, expected_revision)?;
@@ -1017,6 +1157,68 @@ pub(crate) async fn start(
 }
 const START_CANCELLED: &str = "Start cancelled by a newer action";
 type StartGuard = (fn(&buzz_agent_controller::AgentView) -> bool, &'static str);
+
+struct StartAdmission {
+    owner: AgentHost,
+    id: String,
+    ticket: u64,
+    current: Arc<AtomicBool>,
+    retired: bool,
+}
+
+impl Drop for StartAdmission {
+    fn drop(&mut self) {
+        if self.retired {
+            return;
+        }
+        self.current.store(false, Ordering::SeqCst);
+        let _ = self.owner.with(|host| {
+            if host.starts.get(&self.id).map(|pending| pending.ticket) == Some(self.ticket) {
+                host.cancel_start(&self.id);
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(unix)]
+struct CodexStartCheck {
+    result: Result<Option<buzz_agent_controller::codex::CodexLaunchPreflight>, String>,
+    cleanup_failed: bool,
+}
+
+#[cfg(unix)]
+async fn check_codex_start(
+    pending: PendingCodex,
+    context: buzz_agent_controller::codex::CodexContext,
+    current: Arc<AtomicBool>,
+) -> CodexStartCheck {
+    let owner = pending.owner.clone();
+    let ticket = pending.ticket;
+    let checked = tauri::async_runtime::spawn_blocking(move || {
+        crate::codex_readiness::check_binding_owned(owner, ticket, &context, &|| {
+            current.load(Ordering::SeqCst)
+        })
+        .map(|_| buzz_agent_controller::codex::CodexLaunchPreflight::new(context))
+        .map(Some)
+    })
+    .await;
+    match checked {
+        Ok(Ok(preflight)) => CodexStartCheck {
+            result: Ok(preflight),
+            cleanup_failed: false,
+        },
+        Ok(Err(status)) => CodexStartCheck {
+            cleanup_failed: status.status == "cleanup-failed",
+            result: Err(codex_start_failure(status)),
+        },
+        Err(_) => CodexStartCheck {
+            result: Err("Codex readiness cleanup could not be confirmed".into()),
+            cleanup_failed: true,
+        },
+    }
+}
+
 fn check_guard(host: &mut Host, id: &str, guard: Option<StartGuard>) -> Result<(), String> {
     let Some((eligible, refusal)) = guard else {
         return Ok(());
@@ -1042,6 +1244,7 @@ async fn start_guarded(
     guard: Option<StartGuard>,
 ) -> Result<Snapshot, String> {
     let target = id.clone();
+    let admission_owner = owner.clone();
     let prepared = run(owner.clone(), move |host| {
         let id = target;
         let queued_replay = host.queued.remove(&id).flatten();
@@ -1051,6 +1254,7 @@ async fn start_guarded(
         // Re-check while holding the controller, not just when the caller
         // chose this agent: Stop or Edit may have changed it since.
         check_guard(host, &id, guard)?;
+        host.check_codex_retirement(&id)?;
         if host.starts.contains_key(&id) {
             return Err("Agent start already in progress; use Stop to cancel".into());
         }
@@ -1079,26 +1283,65 @@ async fn start_guarded(
             host.controller.record_error(&id, error.clone());
             return Err(error);
         }
+        let pi = host.controller.pi_launch_context(&id, request.2);
+        let codex = host.codex_launch_context(&id, request.2);
+        if codex.as_ref().is_ok_and(Option::is_some) && host.codex_cleanup_failed {
+            return Err("Codex readiness cleanup previously failed; restart the app".into());
+        }
+        let codex_pending = if codex.as_ref().is_ok_and(Option::is_some) {
+            let owner = Arc::new(crate::codex_readiness::Host::default());
+            let ticket = owner.begin_owned()?;
+            Some(PendingCodex { owner, ticket })
+        } else {
+            None
+        };
         host.next_start = host
             .next_start
             .checked_add(1)
             .ok_or("Start sequence exhausted")?;
         let ticket = host.next_start;
+        let current = Arc::new(AtomicBool::new(true));
         host.starts.insert(
             id.clone(),
             PendingStart {
                 ticket,
+                current: current.clone(),
                 workspace: request.3.clone(),
                 status: ProcessStatus::Waiting,
                 revision: request.2,
                 replay_floor,
+                codex: codex_pending.clone(),
             },
         );
-        let pi = host.controller.pi_launch_context(&id, request.2);
-        Ok((request, ticket, host.credentials.clone(), pi))
+        let admission = StartAdmission {
+            owner: admission_owner,
+            id: id.clone(),
+            ticket,
+            current: current.clone(),
+            retired: false,
+        };
+        Ok((
+            request,
+            ticket,
+            host.credentials.clone(),
+            pi,
+            codex,
+            codex_pending,
+            current,
+            admission,
+        ))
     })
     .await?;
-    let ((credential, pubkey, revision, _workspace), ticket, credentials, pi) = prepared;
+    let (
+        (credential, pubkey, revision, _workspace),
+        ticket,
+        credentials,
+        pi,
+        codex,
+        codex_pending,
+        current,
+        mut admission,
+    ) = prepared;
     let probed_pi = matches!(&pi, Ok(Some(_)));
     let preflight = match pi {
         Ok(Some(pi)) => crate::pi_models::verify(pi)
@@ -1107,7 +1350,35 @@ async fn start_guarded(
         Ok(None) => Ok(buzz_agent_controller::pi::LaunchPreflight::new(None)),
         Err(error) => Err(error),
     };
-    if probed_pi && preflight.is_ok() {
+    let probed_codex = matches!(&codex, Ok(Some(_)));
+    #[cfg(unix)]
+    let codex_preflight = match codex {
+        Ok(Some(context)) => {
+            let pending = codex_pending.ok_or("Missing Codex readiness owner")?;
+            let checked = check_codex_start(pending, context, current.clone()).await;
+            if checked.cleanup_failed {
+                run(owner.clone(), |host| {
+                    host.codex_cleanup_failed = true;
+                    Ok(())
+                })
+                .await?;
+            }
+            checked.result
+        }
+        Ok(None) => Ok(None),
+        Err(error) => Err(error),
+    };
+    #[cfg(not(unix))]
+    let codex_preflight = match codex {
+        Ok(Some(_)) => {
+            let _ = codex_pending;
+            Err("Codex execution is not supported on this platform".into())
+        }
+        Ok(None) => Ok(None),
+        Err(error) => Err(error),
+    };
+    let preflights = preflight.and_then(|pi| codex_preflight.map(|codex| (pi, codex)));
+    if (probed_pi || probed_codex) && preflights.is_ok() {
         let target = id.clone();
         run(owner.clone(), move |host| {
             host.starts
@@ -1120,7 +1391,7 @@ async fn start_guarded(
     }
     // OS permission prompts never hold the controller. Stop/quit invalidate the
     // ticket while the OS owns its dialog; a late key cannot start a listener.
-    let acquired = if preflight.is_ok() {
+    let acquired = if preflights.is_ok() {
         tauri::async_runtime::spawn_blocking(move || {
             if !restore && replay_floor.is_none() && guard.is_none() {
                 credentials.retry();
@@ -1132,7 +1403,7 @@ async fn start_guarded(
         .and_then(|v| v)
         .and_then(|v| v.ok_or("Saved agent key is unavailable; nothing was started".into()))
     } else {
-        Err(preflight.as_ref().err().unwrap().clone())
+        Err(preflights.as_ref().err().unwrap().clone())
     };
     let target = id.clone();
     if acquired.is_ok() {
@@ -1147,7 +1418,7 @@ async fn start_guarded(
         })
         .await?;
     }
-    run(owner, move |host| {
+    let result = run(owner, move |host| {
         let replay_floor = host.take_start(&id, ticket)?.replay_floor;
         let key = match acquired {
             Ok(key) => key,
@@ -1163,19 +1434,41 @@ async fn start_guarded(
         // The OS credential prompt can outlast the agent (e.g. its listener
         // exited); eligibility must still hold right before Restart enables it.
         check_guard(host, &id, guard)?;
-        if let Err(error) = host.controller.action_with_preflight(
+        let (pi, codex) = preflights?;
+        if let Err(error) = host.controller.action_with_preflights(
             &id,
             action,
             revision,
             &key,
             replay_floor,
-            &preflight?,
+            buzz_agent_controller::LaunchPreflights {
+                pi: &pi,
+                codex: codex.as_ref(),
+            },
         ) {
             host.controller.record_error(&id, error);
         }
         host.snapshot()
     })
-    .await
+    .await;
+    admission.retired = true;
+    result
+}
+
+#[cfg(unix)]
+fn codex_start_failure(status: crate::codex_readiness::Readiness) -> String {
+    match status.status {
+        "cancelled" => START_CANCELLED,
+        "timeout" => "Codex tool verification timed out; retry Start",
+        "output-limit" => "Codex tool verification exceeded its output limit",
+        "signed-out" => "Sign in with the selected Codex CLI, then retry Start",
+        "configuration-error" => "Codex configuration or login could not be read",
+        "adapter-incompatible" => "The selected Codex ACP adapter is incompatible",
+        "cli-incompatible" => "The selected Codex CLI is incompatible",
+        "cleanup-failed" => "Codex readiness cleanup could not be confirmed",
+        _ => "Codex tools could not be verified",
+    }
+    .into()
 }
 #[tauri::command]
 pub(crate) async fn agent_control_use_here(
@@ -1258,27 +1551,111 @@ pub(crate) async fn agent_control_import_commit(
 #[tauri::command]
 pub(crate) async fn agent_control_create_prepare(
     state: tauri::State<'_, AgentHost>,
+    validation: tauri::State<'_, Arc<crate::codex_validation::Host>>,
     request_id: String,
     destination: String,
     owner: String,
+    edit: AgentEdit,
+    validation_proof: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let validation = validation.inner().clone();
     run(state.inner().clone(), move |host| {
-        if uuid::Uuid::parse_str(&request_id).is_err() {
-            return Err("Invalid create request".into());
+        if let Some(pending) = host.controller.pending_create_recovery()? {
+            return Err(if pending.request_id == request_id {
+                "This create requires recovery; resume or discard it before retrying".into()
+            } else {
+                "Another agent creation requires recovery first".into()
+            });
         }
-        if host.creating.as_ref().map(|(id, _)| id) != Some(&request_id) {
-            host.creating = Some((
-                request_id,
-                Arc::new(NewAgent::prepare(&destination, &owner)?),
-            ));
+        let draft = host.controller.codex_create_validation(edit)?;
+        let admission =
+            crate::codex_validation::create_admission(&request_id, &destination, &owner, draft)?;
+        if let Some(pending) = host
+            .creating
+            .as_ref()
+            .filter(|pending| pending.request_id == request_id)
+        {
+            if pending.admission != admission || !pending.prepared.matches(&destination, &owner)? {
+                return Err("Create settings changed; validate and start again".into());
+            }
+            return Ok(serde_json::json!({
+                "id": pending.prepared.id,
+                "pubkey": pending.prepared.key.pubkey()
+            }));
         }
-        let agent = &host.creating.as_ref().ok_or("Create request expired")?.1;
-        if !agent.matches(&destination, &owner)? {
-            return Err("Create destination or owner changed".into());
+        match (&admission, validation_proof.as_deref()) {
+            (Some(admission), Some(proof)) => validation.consume(proof, admission)?,
+            (Some(_), None) => return Err("Validate this Codex agent before creating it".into()),
+            (None, Some(_)) => return Err("Codex validation does not match this create".into()),
+            (None, None) => {}
         }
-        Ok(serde_json::json!({"id": agent.id, "pubkey": agent.key.pubkey()}))
+        let canonical = NewAgent::validate_target(&destination, &owner)?;
+        let prepared = Arc::new(NewAgent::prepare(&canonical, &owner)?);
+        let response = serde_json::json!({"id": prepared.id, "pubkey": prepared.key.pubkey()});
+        host.creating = Some(PendingCreate {
+            request_id,
+            destination: canonical,
+            owner,
+            prepared,
+            admission,
+        });
+        Ok(response)
     })
     .await
+}
+
+fn bind_create_recovery(
+    mut record: buzz_agent_controller::PendingCreateRecovery,
+    edit: &AgentEdit,
+    auth: &str,
+    admission: Option<&crate::codex_validation::Admission>,
+) -> Result<buzz_agent_controller::PendingCreateRecovery, String> {
+    let codex = admission
+        .map(|admission| admission.draft().commitment())
+        .transpose()?;
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "requestId": record.request_id,
+        "destination": record.destination,
+        "owner": record.owner,
+        "agentId": record.agent_id,
+        "pubkey": record.pubkey,
+        "edit": edit,
+        "auth": auth,
+        "codex": codex,
+    }))
+    .map_err(|_| "Could not bind the create recovery request")?;
+    record.commitment = format!("{:x}", Sha256::digest(bytes));
+    Ok(record)
+}
+
+fn read_create_recovery_key(
+    credentials: &dyn Credentials,
+    pending: &buzz_agent_controller::PendingCreateRecovery,
+) -> Result<buzz_agent_controller::Secret, String> {
+    credentials
+        .read(&pending.agent_id, &pending.pubkey)?
+        .ok_or_else(|| {
+            "The pending create has no durable key; discard it and validate again".into()
+        })
+}
+
+fn discard_create_recovery_key(
+    credentials: &dyn Credentials,
+    pending: &buzz_agent_controller::PendingCreateRecovery,
+) -> Result<(), String> {
+    if credentials
+        .read(&pending.agent_id, &pending.pubkey)?
+        .is_some()
+    {
+        credentials.delete(&pending.agent_id, &pending.pubkey)?;
+    }
+    if credentials
+        .read(&pending.agent_id, &pending.pubkey)?
+        .is_some()
+    {
+        return Err("Pending credential cleanup could not be confirmed".into());
+    }
+    Ok(())
 }
 /// Owner attestation for the pending create's generated key only. The
 /// identity may read OS credentials, so the agent host stays unlocked.
@@ -1291,11 +1668,13 @@ pub(crate) async fn agent_control_create_authorize(
     pubkey: String,
 ) -> Result<Vec<String>, String> {
     let (owner, pubkey) = run(state.inner().clone(), move |host| {
-        let (_, prepared) = host
+        let pending = host
             .creating
             .as_ref()
             .ok_or("Create request expired; reopen Add agent")?;
-        if prepared.key.pubkey() != pubkey || !prepared.matches(&destination, &owner)? {
+        if pending.prepared.key.pubkey() != pubkey
+            || !pending.prepared.matches(&destination, &owner)?
+        {
             return Err("Authorization does not match the pending create request".into());
         }
         Ok((owner, pubkey))
@@ -1311,37 +1690,203 @@ pub(crate) async fn agent_control_create_commit(
     auth: String,
 ) -> Result<Snapshot, String> {
     let owner = state.inner().clone();
-    let (prepared, credentials, request_id, edit, auth) = run(owner.clone(), move |host| {
-        let (_, prepared) = host
+    let lane = owner.2.clone().lock_owned().await;
+    let (prepared, credentials, request_id, edit, auth, admission, recovery) =
+        owner.with(|host| {
+            let pending = host
+                .creating
+                .as_ref()
+                .filter(|pending| pending.request_id == request_id)
+                .ok_or("Create request expired; reopen Add agent")?;
+            let current = crate::codex_validation::create_admission(
+                &request_id,
+                &pending.destination,
+                &pending.owner,
+                host.controller.codex_create_validation(edit.clone())?,
+            )?;
+            if current != pending.admission {
+                return Err("Create settings changed; validate and start again".into());
+            }
+            let prepared = &pending.prepared;
+            prepared.validate(edit.clone(), &auth)?;
+            let recovery = bind_create_recovery(
+                buzz_agent_controller::PendingCreateRecovery {
+                    request_id: request_id.clone(),
+                    agent_id: prepared.id.clone(),
+                    pubkey: prepared.key.pubkey().into(),
+                    destination: pending.destination.clone(),
+                    owner: pending.owner.clone(),
+                    commitment: String::new(),
+                },
+                &edit,
+                &auth,
+                pending.admission.as_ref(),
+            )?;
+            host.controller.stage_create_recovery(recovery.clone())?;
+            Ok((
+                prepared.clone(),
+                host.credentials.clone(),
+                request_id,
+                edit,
+                auth,
+                pending.admission.clone(),
+                recovery,
+            ))
+        })?;
+    let saved = prepared.clone();
+    let (_lane, saved) = tauri::async_runtime::spawn_blocking(move || {
+        credentials.retry();
+        let result = saved.save_key(credentials.as_ref());
+        (lane, result)
+    })
+    .await
+    .map_err(|_| "Native credential operation failed")?;
+    saved?;
+    owner.with(move |host| {
+        let pending = host
             .creating
             .as_ref()
-            .filter(|(id, _)| id == &request_id)
-            .ok_or("Create request expired; reopen Add agent")?;
-        prepared.validate(edit.clone(), &auth)?;
-        Ok((
-            prepared.clone(),
-            host.credentials.clone(),
-            request_id,
-            edit,
-            auth,
-        ))
-    })
-    .await?;
-    let saved = prepared.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        credentials.retry();
-        saved.save_key(credentials.as_ref())
-    })
-    .await
-    .map_err(|_| "Native credential operation failed")??;
-    run(owner, move |host| {
-        if host.creating.as_ref().map(|(id, _)| id) != Some(&request_id) {
+            .filter(|pending| pending.request_id == request_id)
+            .ok_or("Create request was replaced")?;
+        let current = crate::codex_validation::create_admission(
+            &request_id,
+            &pending.destination,
+            &pending.owner,
+            host.controller.codex_create_validation(edit.clone())?,
+        )?;
+        if current != admission || pending.admission != admission {
+            return Err("Create settings changed; validate and start again".into());
+        }
+        if host.creating.as_ref().map(|pending| &pending.request_id) != Some(&request_id) {
             return Err("Create request was replaced".into());
         }
-        host.controller.create(&prepared, edit, &auth)?;
+        host.controller
+            .finish_create_recovery(&prepared, edit, &auth, &recovery)?;
+        host.creating = None;
         host.snapshot()
     })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateRecoveryView {
+    request_id: String,
+    agent_id: String,
+    pubkey: String,
+    destination: String,
+    owner: String,
+}
+
+impl From<buzz_agent_controller::PendingCreateRecovery> for CreateRecoveryView {
+    fn from(value: buzz_agent_controller::PendingCreateRecovery) -> Self {
+        Self {
+            request_id: value.request_id,
+            agent_id: value.agent_id,
+            pubkey: value.pubkey,
+            destination: value.destination,
+            owner: value.owner,
+        }
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn agent_control_create_recovery(
+    state: tauri::State<'_, AgentHost>,
+) -> Result<Option<CreateRecoveryView>, String> {
+    run(state.inner().clone(), |host| {
+        Ok(host.controller.pending_create_recovery()?.map(Into::into))
+    })
     .await
+}
+
+#[tauri::command]
+pub(crate) async fn agent_control_create_resume(
+    state: tauri::State<'_, AgentHost>,
+    request_id: String,
+    edit: AgentEdit,
+    auth: String,
+) -> Result<Snapshot, String> {
+    let owner = state.inner().clone();
+    let lane = owner.2.clone().lock_owned().await;
+    let (pending, credentials) = owner.with(|host| {
+        let pending = host
+            .controller
+            .pending_create_recovery()?
+            .filter(|pending| pending.request_id == request_id)
+            .ok_or("Create recovery request no longer exists")?;
+        let admission = crate::codex_validation::create_admission(
+            &pending.request_id,
+            &pending.destination,
+            &pending.owner,
+            host.controller.codex_create_validation(edit.clone())?,
+        )?;
+        let expected = bind_create_recovery(pending.clone(), &edit, &auth, admission.as_ref())?;
+        if expected != pending {
+            return Err(
+                "Create recovery input changed; use the original settings or discard it".into(),
+            );
+        }
+        Ok((pending, host.credentials.clone()))
+    })?;
+    let key_pending = pending.clone();
+    let (_lane, key) = tauri::async_runtime::spawn_blocking(move || {
+        credentials.retry();
+        let result = read_create_recovery_key(credentials.as_ref(), &key_pending);
+        (lane, result)
+    })
+    .await
+    .map_err(|_| "Native credential recovery failed")?;
+    let key = key?;
+    let prepared = NewAgent::recover(&pending.destination, &pending.owner, &pending.agent_id, key)?;
+    owner.with(move |host| {
+        let admission = crate::codex_validation::create_admission(
+            &pending.request_id,
+            &pending.destination,
+            &pending.owner,
+            host.controller.codex_create_validation(edit.clone())?,
+        )?;
+        let expected = bind_create_recovery(pending.clone(), &edit, &auth, admission.as_ref())?;
+        if expected != pending {
+            return Err(
+                "Create recovery input changed; use the original settings or discard it".into(),
+            );
+        }
+        host.controller
+            .finish_create_recovery(&prepared, edit, &auth, &pending)?;
+        host.creating = None;
+        host.snapshot()
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn agent_control_create_discard(
+    state: tauri::State<'_, AgentHost>,
+    request_id: String,
+) -> Result<Option<CreateRecoveryView>, String> {
+    let owner = state.inner().clone();
+    let lane = owner.2.clone().lock_owned().await;
+    let (pending, credentials) = owner.with(|host| {
+        let pending = host
+            .controller
+            .pending_create_recovery()?
+            .filter(|pending| pending.request_id == request_id)
+            .ok_or("Create recovery request no longer exists")?;
+        Ok((pending, host.credentials.clone()))
+    })?;
+    let key_pending = pending.clone();
+    let (_lane, discarded) = tauri::async_runtime::spawn_blocking(move || {
+        credentials.retry();
+        let result = discard_create_recovery_key(credentials.as_ref(), &key_pending);
+        (lane, result)
+    })
+    .await
+    .map_err(|_| "Native credential recovery failed")?;
+    discarded?;
+    owner.with(move |host| {
+        host.controller.discard_create_recovery(&pending)?;
+        host.creating = None;
+        Ok(None)
+    })
 }
 #[tauri::command]
 pub(crate) async fn agent_control_creation_profile(

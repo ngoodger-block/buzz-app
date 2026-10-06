@@ -36,10 +36,12 @@ fn agent(workspace: &Path) -> Agent {
         session_policy_inherit: false,
         workspace: workspace.display().to_string(),
         harness: HarnessEdit {
+            integration: None,
             databricks: None,
             command: "buzz-agent".into(),
             args: vec![],
             model: "test-model".into(),
+            configuration: None,
             provider: "test-provider".into(),
         },
         environment: BTreeMap::from([("PROVIDER_TEST_SETTING".into(), "explicit-value".into())]),
@@ -482,6 +484,67 @@ fn new_records_launch_preference_is_independent_of_start_and_stop() {
     controller.action(&a.id, Action::Stop).unwrap();
     assert_eq!(controller.launch_ids().unwrap(), vec![a.id.clone()]);
 }
+
+#[test]
+fn fresh_controller_finishes_exact_journaled_identity_and_retires_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("config");
+    let owner: Vec<String> = serde_json::from_str(&crate::secret::test_attestation(PUB)).unwrap();
+    let prepared = crate::NewAgent::prepare("wss://relay.example", &owner[1]).unwrap();
+    let saved = agent(dir.path());
+    let edit = AgentEdit {
+        name: saved.name,
+        picture: None,
+        system_prompt: saved.system_prompt,
+        session_policy: Some(None),
+        workspace: saved.workspace,
+        harness: saved.harness,
+        environment: BTreeMap::new(),
+    };
+    let auth = crate::secret::test_attestation(prepared.key.pubkey());
+    let pending = crate::PendingCreateRecovery {
+        request_id: "123e4567-e89b-12d3-a456-426614174000".into(),
+        agent_id: prepared.id.clone(),
+        pubkey: prepared.key.pubkey().into(),
+        destination: "wss://relay.example".into(),
+        owner: owner[1].clone(),
+        commitment: "ab".repeat(32),
+    };
+    let mut controller = Controller::new(
+        Store::open(root.clone()).unwrap(),
+        Arc::new(Memory),
+        Err("No fixture runtime".into()),
+        dir.path().join("ownership"),
+    );
+    controller.stage_create_recovery(pending.clone()).unwrap();
+    drop(controller);
+
+    let mut reopened = Controller::new(
+        Store::open(root.clone()).unwrap(),
+        Arc::new(Memory),
+        Err("No fixture runtime".into()),
+        dir.path().join("ownership"),
+    );
+    assert_eq!(
+        reopened.pending_create_recovery().unwrap(),
+        Some(pending.clone())
+    );
+    let recovered = crate::NewAgent::recover(
+        &pending.destination,
+        &pending.owner,
+        &pending.agent_id,
+        prepared.key,
+    )
+    .unwrap();
+    reopened
+        .finish_create_recovery(&recovered, edit, &auth, &pending)
+        .unwrap();
+    drop(reopened);
+
+    let store = Store::open(root).unwrap();
+    assert!(store.pending_create().unwrap().is_none());
+    assert_eq!(store.agents().unwrap()[0].id, pending.agent_id);
+}
 #[test]
 #[cfg(unix)]
 fn failed_temp_cleanup_reports_error_and_allows_explicit_retry() {
@@ -704,6 +767,155 @@ fn exact_command_has_no_ambient_identity_and_launch_failure_is_truthful() {
     assert!(controller.running.is_empty());
     let stopped = controller.action(&a.id, Action::Stop).unwrap();
     assert!(!stopped.agents[0].enabled);
+}
+
+#[cfg(unix)]
+fn codex_fixture(workspace: &Path) -> (Agent, crate::codex::CodexContext) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tools = workspace.join("codex-tools");
+    fs::create_dir_all(&tools).unwrap();
+    let adapter = tools.join("codex-acp-script");
+    let cli = tools.join("codex-cli-script");
+    fs::write(&adapter, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::write(&cli, "#!/usr/bin/python3\n").unwrap();
+    fs::set_permissions(&adapter, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
+    let context =
+        crate::codex::CodexContext::new(&adapter, &cli, workspace, &BTreeMap::new()).unwrap();
+    let mut saved = agent(workspace);
+    saved.harness = HarnessEdit {
+        integration: Some(crate::HarnessIntegration::Codex),
+        command: context.adapter.to_string_lossy().into_owned(),
+        args: vec![],
+        model: String::new(),
+        configuration: Some(crate::AiConfiguration::Default),
+        provider: String::new(),
+        databricks: None,
+    };
+    saved.environment = BTreeMap::from([("BUZZ_ACP_AGENTS".into(), "3".into())]);
+    (saved, context)
+}
+
+fn command_environment(command: &Command) -> BTreeMap<String, String> {
+    command
+        .get_envs()
+        .filter_map(|(key, value)| {
+            value.map(|value| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.to_string_lossy().into_owned(),
+                )
+            })
+        })
+        .collect()
+}
+
+#[test]
+#[cfg(unix)]
+fn codex_command_binds_exact_interpreters_and_default_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = bundle(dir.path());
+    let (saved, context) = codex_fixture(dir.path());
+    assert_ne!(context.interpreter, context.cli_interpreter);
+    let preflight = crate::codex::CodexLaunchPreflight::new(context.clone());
+    let command = runtime
+        .command_checked_with_codex(
+            &saved,
+            &Secret::parse(KEY, PUB).unwrap(),
+            &crate::BuildDefaults {
+                model: "unrelated-default-model".into(),
+                provider: "unrelated-default-provider".into(),
+                ..Default::default()
+            },
+            None,
+            Some(&preflight),
+        )
+        .unwrap();
+    let environment = command_environment(&command);
+    assert_eq!(
+        environment["BUZZ_ACP_AGENT_COMMAND"],
+        context.interpreter.as_ref().unwrap().to_string_lossy()
+    );
+    assert_eq!(
+        environment["BUZZ_ACP_AGENT_ARGS"],
+        context.adapter.to_string_lossy()
+    );
+    assert_eq!(environment["CODEX_PATH"], context.cli.to_string_lossy());
+    assert_eq!(environment["INITIAL_AGENT_MODE"], "agent-full-access");
+    assert_eq!(environment["BUZZ_ACP_AGENTS"], "3");
+    assert!(environment.contains_key("BUZZ_ACP_MCP_COMMAND"));
+    assert!(!environment.contains_key("BUZZ_ACP_MODEL"));
+    assert!(!environment.contains_key("BUZZ_ACP_EFFORT_LEVEL"));
+    assert!(!environment.contains_key("BUZZ_AGENT_MODEL"));
+    assert!(!environment.contains_key("BUZZ_AGENT_PROVIDER"));
+    assert!(!environment.contains_key("SSH_AUTH_SOCK"));
+    let path: Vec<_> = std::env::split_paths(&environment["PATH"]).collect();
+    assert_eq!(path.first(), Some(&dir.path().to_path_buf()));
+    assert!(path[0].join("buzz").is_file());
+    assert!(path.contains(
+        &context
+            .interpreter
+            .as_ref()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf()
+    ));
+    assert!(path.contains(
+        &context
+            .cli_interpreter
+            .as_ref()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf()
+    ));
+}
+
+#[test]
+#[cfg(unix)]
+fn codex_command_rechecks_binding_and_applies_advanced_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = bundle(dir.path());
+    let (mut saved, context) = codex_fixture(dir.path());
+    let preflight = crate::codex::CodexLaunchPreflight::new(context);
+    saved.harness.configuration = Some(crate::AiConfiguration::Advanced {
+        effort: crate::EffortSelection::Value {
+            value: "xhigh".into(),
+        },
+    });
+    saved.harness.model = "gpt-test".into();
+    let command = runtime
+        .command_checked_with_codex(
+            &saved,
+            &Secret::parse(KEY, PUB).unwrap(),
+            &crate::BuildDefaults::default(),
+            None,
+            Some(&preflight),
+        )
+        .unwrap();
+    let environment = command_environment(&command);
+    assert_eq!(environment["BUZZ_ACP_MODEL"], "gpt-test");
+    assert_eq!(environment["BUZZ_ACP_EFFORT_LEVEL"], "xhigh");
+
+    let mismatched = dir.path().join("other-codex-acp");
+    fs::write(&mismatched, "#!/bin/sh\nexit 0\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&mismatched, fs::Permissions::from_mode(0o700)).unwrap();
+    saved.harness.command = mismatched.to_string_lossy().into_owned();
+    assert_eq!(
+        runtime
+            .command_checked_with_codex(
+                &saved,
+                &Secret::parse(KEY, PUB).unwrap(),
+                &crate::BuildDefaults::default(),
+                None,
+                Some(&preflight),
+            )
+            .unwrap_err(),
+        "Saved Codex ACP adapter no longer matches the selected binding"
+    );
 }
 /// Windows listener stand-in: `bundle` installs this test binary as
 /// buzz-acp.exe, and the guardian runs only this test from that copy.
@@ -1654,9 +1866,11 @@ fn goose_model_context_uses_effective_draft_provider_without_projecting_secrets(
         session_policy: Some(None),
         workspace: dir.path().display().to_string(),
         harness: HarnessEdit {
+            integration: None,
             command: goose.display().to_string(),
             args: vec!["acp".into()],
             model: "short-name".into(),
+            configuration: None,
             provider: "databricks_v2".into(),
             databricks: None,
         },

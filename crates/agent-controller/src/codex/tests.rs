@@ -133,6 +133,24 @@ fn rejects_unsupported_or_unresolved_interpreters_and_context() {
 }
 
 #[test]
+fn rejects_adapter_paths_or_arguments_that_buzz_acp_cannot_represent() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let cli = root.path().join("codex");
+    tool(&cli, "#!/bin/sh\nexit 0\n");
+    for name in ["codex,acp", " codex-acp "] {
+        let adapter = root.path().join(name);
+        tool(&adapter, "#!/bin/sh\nexit 0\n");
+        assert!(CodexContext::new(&adapter, &cli, &workspace, &BTreeMap::new()).is_err());
+    }
+    let adapter = root.path().join("codex-acp");
+    tool(&adapter, "#!/bin/sh\nexit 0\n");
+    let context = CodexContext::new(&adapter, &cli, &workspace, &BTreeMap::new()).unwrap();
+    assert!(context.adapter_launch(&["--model=other".into()]).is_err());
+}
+
+#[test]
 fn binding_equality_fences_path_workspace_and_configuration_context() {
     let root = tempfile::tempdir().unwrap();
     let first = root.path().join("first");

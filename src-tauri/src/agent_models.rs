@@ -967,6 +967,17 @@ fn codex_failure(failure: crate::codex_acp::Failure) -> String {
         crate::codex_acp::Failure::Incompatible => {
             "Codex model discovery could not be completed with the selected tools"
         }
+        crate::codex_acp::Failure::Authentication => {
+            "Codex sign-in is required before model discovery"
+        }
+        crate::codex_acp::Failure::Network => "Codex model discovery could not reach its service",
+        crate::codex_acp::Failure::Quota
+        | crate::codex_acp::Failure::Context
+        | crate::codex_acp::Failure::Limit => "A Codex service limit prevented model discovery",
+        crate::codex_acp::Failure::Model | crate::codex_acp::Failure::Effort => {
+            "Codex did not confirm the selected model configuration"
+        }
+        crate::codex_acp::Failure::Rejected => "Codex rejected the model discovery request",
     }
     .into()
 }

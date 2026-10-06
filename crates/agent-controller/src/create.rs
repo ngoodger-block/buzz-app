@@ -11,14 +11,33 @@ pub struct NewAgent {
     owner: String,
 }
 impl NewAgent {
-    pub fn prepare(destination: &str, owner: &str) -> Result<Self> {
+    /// Validate and canonicalize a Create destination/owner without generating
+    /// an identity. Codex validation binds this result before `prepare` runs.
+    pub fn validate_target(destination: &str, owner: &str) -> Result<String> {
         if !canonical_key(owner) {
             return Err("Choose a signed-in owner".into());
         }
-        let relay = canonical_relay(destination)?;
+        canonical_relay(destination)
+    }
+
+    pub fn prepare(destination: &str, owner: &str) -> Result<Self> {
+        let relay = Self::validate_target(destination, owner)?;
         let key = Secret::generate()?;
         Ok(Self {
             id: agent_id(key.pubkey(), &relay),
+            key,
+            relay,
+            owner: owner.into(),
+        })
+    }
+    /// Reconstruct a journaled identity from its exact verified stored key.
+    pub fn recover(destination: &str, owner: &str, id: &str, key: Secret) -> Result<Self> {
+        let relay = Self::validate_target(destination, owner)?;
+        if agent_id(key.pubkey(), &relay) != id {
+            return Err("Recovered key does not match the pending agent identity".into());
+        }
+        Ok(Self {
+            id: id.into(),
             key,
             relay,
             owner: owner.into(),
@@ -45,9 +64,11 @@ impl NewAgent {
             session_policy_inherit: false,
             workspace: String::new(),
             harness: HarnessEdit {
+                integration: None,
                 command: String::new(),
                 args: vec![],
                 model: String::new(),
+                configuration: None,
                 provider: String::new(),
                 databricks: None,
             },
@@ -77,7 +98,59 @@ impl NewAgent {
     }
 }
 impl Controller {
+    /// Public recovery metadata; inspecting it never opens credential storage.
+    pub fn pending_create_recovery(&self) -> Result<Option<crate::PendingCreateRecovery>> {
+        self.store.pending_create()
+    }
+    /// Persist the exact public commitment before native credential I/O.
+    pub fn stage_create_recovery(&mut self, pending: crate::PendingCreateRecovery) -> Result<()> {
+        self.store.stage_pending_create(pending)
+    }
+    /// Atomically save the recovered agent and retire the matching journal.
+    pub fn finish_create_recovery(
+        &mut self,
+        prepared: &NewAgent,
+        edit: AgentEdit,
+        auth: &str,
+        pending: &crate::PendingCreateRecovery,
+    ) -> Result<()> {
+        let mut agent = prepared.agent(edit, auth)?;
+        agent
+            .extra
+            .insert("profilePending".into(), Value::Bool(true));
+        self.store.finish_pending_create(pending, agent)
+    }
+    /// Retire the exact journal after the caller confirms credential cleanup.
+    pub fn discard_create_recovery(
+        &mut self,
+        pending: &crate::PendingCreateRecovery,
+    ) -> Result<()> {
+        self.store.discard_pending_create(pending)
+    }
     pub fn create(&mut self, prepared: &NewAgent, edit: AgentEdit, auth: &str) -> Result<()> {
+        if self.codex_create_validation(edit.clone())?.is_some() {
+            return Err("Native Codex creation requires a current validation proof".into());
+        }
+        self.create_committed(prepared, edit, auth)
+    }
+    /// Commit native Codex creation only when the exact effective draft matches
+    /// the proof consumed by the app-native admission owner.
+    pub fn create_codex_validated(
+        &mut self,
+        prepared: &NewAgent,
+        edit: AgentEdit,
+        auth: &str,
+        validated: &crate::codex::CodexValidationDraft,
+    ) -> Result<()> {
+        let current = self
+            .codex_create_validation(edit.clone())?
+            .ok_or("Native Codex validation no longer matches this create")?;
+        if &current != validated {
+            return Err("Native Codex validation is stale; validate again".into());
+        }
+        self.create_committed(prepared, edit, auth)
+    }
+    fn create_committed(&mut self, prepared: &NewAgent, edit: AgentEdit, auth: &str) -> Result<()> {
         let mut agent = prepared.agent(edit, auth)?;
         if self.store.agents()?.iter().any(|a| a.id == agent.id) {
             return Ok(());

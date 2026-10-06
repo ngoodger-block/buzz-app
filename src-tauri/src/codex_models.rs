@@ -9,6 +9,86 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
 #[cfg(unix)]
+pub(crate) fn apply_configuration(
+    client: &mut codex_acp::Client,
+    session_id: &str,
+    opened: &Value,
+    requested_model: &str,
+    configuration: &buzz_agent_controller::AiConfiguration,
+    current: &impl Fn() -> bool,
+) -> Result<(), Failure> {
+    use buzz_agent_controller::{AiConfiguration, EffortSelection};
+    let AiConfiguration::Advanced { effort } = configuration else {
+        return Ok(());
+    };
+    let initial = parse_options(opened.get("configOptions"))?;
+    if !initial
+        .models
+        .as_ref()
+        .is_some_and(|models| models.iter().any(|model| model.id == requested_model))
+    {
+        return Err(Failure::Model);
+    }
+    let changed = client
+        .request(
+            "session/set_config_option",
+            json!({
+                "sessionId": session_id,
+                "configId": "model",
+                "value": requested_model,
+            }),
+            current,
+        )
+        .map_err(Failure::model)?;
+    let selected = parse_options(changed.get("configOptions")).map_err(Failure::model)?;
+    if selected.current_model.as_deref() != Some(requested_model) {
+        return Err(Failure::Model);
+    }
+    match effort {
+        EffortSelection::Value { value } => {
+            if !selected
+                .effort
+                .as_ref()
+                .is_some_and(|effort| effort.options.iter().any(|option| option.id == *value))
+            {
+                return Err(Failure::Effort);
+            }
+            let changed = client
+                .request(
+                    "session/set_config_option",
+                    json!({
+                        "sessionId": session_id,
+                        "configId": "reasoning_effort",
+                        "value": value,
+                    }),
+                    current,
+                )
+                .map_err(Failure::effort)?;
+            let selected = parse_options(changed.get("configOptions")).map_err(Failure::effort)?;
+            if selected.current_model.as_deref() != Some(requested_model)
+                || selected
+                    .effort
+                    .as_ref()
+                    .and_then(|effort| effort.current.as_deref())
+                    != Some(value)
+            {
+                return Err(Failure::Effort);
+            }
+        }
+        EffortSelection::Unsupported => {
+            if !selected
+                .effort
+                .as_ref()
+                .is_some_and(|effort| effort.current.is_none() && effort.options.is_empty())
+            {
+                return Err(Failure::Effort);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
 const MAX_MODELS: usize = 1_000;
 #[cfg(unix)]
 const MAX_EFFORTS: usize = 20;

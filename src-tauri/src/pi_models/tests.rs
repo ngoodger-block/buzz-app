@@ -286,9 +286,11 @@ async fn installed_pi_catalog_uses_production_context() {
         session_policy: Some(None),
         workspace: dir.path().display().to_string(),
         harness: HarnessEdit {
+            integration: None,
             command: adapter,
             args: vec!["--".into(), "--thinking".into(), "high".into()],
             model: String::new(),
+            configuration: None,
             provider: String::new(),
             databricks: None,
         },
@@ -327,9 +329,11 @@ async fn installed_pi_connection_test_uses_production_context() {
             session_policy: Some(None),
             workspace: dir.path().display().to_string(),
             harness: HarnessEdit {
+                integration: None,
                 command: adapter.clone(),
                 args: vec![],
                 model: String::new(),
+                configuration: None,
                 provider: String::new(),
                 databricks: None,
             },

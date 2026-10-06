@@ -56,6 +56,17 @@ pub(crate) struct Host {
     settled: Condvar,
     lane: Arc<tokio::sync::Mutex<()>>,
     closed: AtomicBool,
+    #[cfg(test)]
+    retirement_gate: Mutex<Option<(Arc<AtomicBool>, Arc<AtomicBool>)>>,
+}
+
+#[cfg(test)]
+pub(crate) struct RetirementRelease(Arc<AtomicBool>);
+#[cfg(test)]
+impl Drop for RetirementRelease {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 #[derive(Default)]
@@ -90,6 +101,8 @@ impl Default for Host {
             settled: Condvar::new(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
             closed: AtomicBool::new(false),
+            #[cfg(test)]
+            retirement_gate: Mutex::new(None),
         }
     }
 }
@@ -144,6 +157,75 @@ impl Host {
                 .filter(|active| active.ticket == ticket)
             {
                 active.cancelled.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Reserve one dedicated readiness owner for a managed Start. The owner is
+    /// not shared with Settings checks, so its single ticket cannot be replaced.
+    pub(crate) fn begin_owned(&self) -> Result<u64, String> {
+        self.begin()
+    }
+
+    /// Cancel an owned check. A ticket that has not reached native work retires
+    /// immediately; claimed work remains reserved until `Finish` runs.
+    pub(crate) fn cancel_owned(&self, ticket: u64) {
+        if let Ok(mut tickets) = self.tickets.lock() {
+            let unclaimed = tickets
+                .active
+                .as_ref()
+                .is_some_and(|active| active.ticket == ticket && !active.claimed);
+            if let Some(active) = tickets
+                .active
+                .as_ref()
+                .filter(|active| active.ticket == ticket)
+            {
+                active.cancelled.store(true, Ordering::SeqCst);
+            }
+            if unclaimed {
+                tickets.active = None;
+                self.settled.notify_all();
+            }
+        }
+    }
+
+    /// `Ok(false)` means native cleanup still owns the ticket. A cleanup error
+    /// remains sticky and must block future starts until app restart.
+    pub(crate) fn retirement(&self) -> Result<bool, String> {
+        let tickets = self
+            .tickets
+            .lock()
+            .map_err(|_| "Codex readiness cleanup could not be confirmed")?;
+        if tickets.running || tickets.active.is_some() {
+            Ok(false)
+        } else if tickets.cleanup_failed {
+            Err("Codex readiness cleanup could not be confirmed".into())
+        } else {
+            Ok(true)
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hold_retirement(&self) -> (Arc<AtomicBool>, RetirementRelease) {
+        let entered = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        if let Ok(mut gate) = self.retirement_gate.lock() {
+            *gate = Some((entered.clone(), release.clone()));
+        }
+        (entered, RetirementRelease(release))
+    }
+
+    #[cfg(test)]
+    fn wait_for_retirement_gate(&self) {
+        let gate = self
+            .retirement_gate
+            .lock()
+            .ok()
+            .and_then(|gate| gate.clone());
+        if let Some((entered, release)) = gate {
+            entered.store(true, Ordering::SeqCst);
+            while !release.load(Ordering::SeqCst) {
+                std::thread::yield_now();
             }
         }
     }
@@ -305,20 +387,69 @@ fn resolution_failure(error: &str) -> Readiness {
 
 #[cfg(unix)]
 fn check_context(context: CodexContext, current: &impl Fn() -> bool) -> Result<Readiness, String> {
-    let binding = match check_tools(&context, current) {
+    let binding = match check_binding(&context, current) {
         Ok(binding) => binding,
         Err(status) => return Ok(status),
     };
-    if let Err(failure) = crate::codex_acp::initialize(&context, &binding.adapter_version, current)
-    {
-        return Ok(acp_failure(failure));
-    }
     Ok(Readiness {
         status: "binding-ready",
         message: "CLI, login, and ACP binding verified. Codex agent creation is not enabled yet.",
         adapter_version: Some(binding.adapter_version),
         cli_version: Some(binding.cli_version),
     })
+}
+
+#[cfg(unix)]
+pub(crate) fn check_binding(
+    context: &CodexContext,
+    current: &impl Fn() -> bool,
+) -> Result<ToolBinding, Readiness> {
+    let binding = check_tools(context, current)?;
+    crate::codex_acp::initialize(context, &binding.adapter_version, current)
+        .map_err(acp_failure)?;
+    Ok(binding)
+}
+
+/// Run complete binding readiness under a dedicated native owner. `Finish`
+/// lives in this blocking call, so task cancellation or runtime teardown cannot
+/// retire the ticket before process cleanup actually settles.
+#[cfg(unix)]
+pub(crate) fn check_binding_owned(
+    owner: Arc<Host>,
+    ticket: u64,
+    context: &CodexContext,
+    current: &impl Fn() -> bool,
+) -> Result<ToolBinding, Readiness> {
+    run_owned(
+        owner,
+        ticket,
+        || Readiness::failed("cancelled", "Codex readiness check was cancelled."),
+        |readiness| readiness.status == "cleanup-failed",
+        |cancelled| check_binding(context, &|| current() && !cancelled.load(Ordering::SeqCst)),
+    )
+}
+
+#[cfg(unix)]
+pub(crate) fn run_owned<T, E>(
+    owner: Arc<Host>,
+    ticket: u64,
+    cancelled_error: impl Fn() -> E,
+    cleanup_failed: impl Fn(&E) -> bool,
+    operation: impl FnOnce(Arc<AtomicBool>) -> Result<T, E>,
+) -> Result<T, E> {
+    let cancelled = owner.claim(ticket).map_err(|_| cancelled_error())?;
+    let mut finish = Finish {
+        owner: owner.clone(),
+        ticket,
+        cleanup_failed: false,
+    };
+    owner.started(ticket).map_err(|_| cancelled_error())?;
+    finish.cleanup_failed = true;
+    let result = operation(cancelled);
+    #[cfg(test)]
+    owner.wait_for_retirement_gate();
+    finish.cleanup_failed = result.as_ref().is_err_and(cleanup_failed);
+    result
 }
 
 #[cfg(unix)]
@@ -393,6 +524,23 @@ fn acp_failure(failure: crate::codex_acp::Failure) -> Readiness {
             "The Codex ACP adapter process could not be cleaned up.",
         ),
         Failure::Incompatible => Readiness::failed(
+            "adapter-incompatible",
+            "The Codex ACP adapter is incompatible with this binding.",
+        ),
+        Failure::Authentication => Readiness::failed(
+            "signed-out",
+            "Sign in with the selected Codex CLI, then check again.",
+        ),
+        Failure::Network => Readiness::failed(
+            "configuration-error",
+            "The Codex ACP adapter could not reach its service.",
+        ),
+        Failure::Rejected
+        | Failure::Quota
+        | Failure::Context
+        | Failure::Limit
+        | Failure::Model
+        | Failure::Effort => Readiness::failed(
             "adapter-incompatible",
             "The Codex ACP adapter is incompatible with this binding.",
         ),

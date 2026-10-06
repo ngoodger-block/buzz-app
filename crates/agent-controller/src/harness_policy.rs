@@ -87,6 +87,8 @@ pub enum ModelRequirement {
 pub enum EffortDiscovery {
     /// This integration does not yet report model-specific effort metadata.
     Unknown,
+    /// This integration reports effort choices for the selected model.
+    ModelSpecific,
 }
 
 /// Environment keys used by the worker's provider/model selectors.
@@ -134,6 +136,8 @@ impl HarnessConfigurationPolicy {
             HarnessIntegration::Codex => {
                 policy.authentication = AuthenticationPolicy::External;
                 policy.provider = ProviderPolicy::External;
+                policy.supported_modes = &[ConfigurationMode::Default, ConfigurationMode::Advanced];
+                policy.effort_discovery = EffortDiscovery::ModelSpecific;
             }
             HarnessIntegration::External => {}
         }

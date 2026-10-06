@@ -103,6 +103,29 @@ fn cleanup_failure_is_sticky_for_shutdown_and_future_admission() {
     assert!(host.shutdown().is_err());
 }
 
+#[test]
+#[cfg(unix)]
+fn owned_worker_panic_retires_with_sticky_cleanup_failure() {
+    let host = Arc::new(Host::default());
+    let ticket = host.begin_owned().unwrap();
+    let worker = host.clone();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _: Result<(), Readiness> = run_owned(
+            worker,
+            ticket,
+            || Readiness::failed("cancelled", "cancelled"),
+            |_| false,
+            |_| panic!("synthetic owned readiness failure"),
+        );
+    }));
+    assert!(result.is_err());
+    assert_eq!(
+        host.retirement().unwrap_err(),
+        "Codex readiness cleanup could not be confirmed"
+    );
+    assert!(host.begin_owned().is_err());
+}
+
 #[cfg(unix)]
 mod unix {
     use super::*;

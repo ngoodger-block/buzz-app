@@ -89,3 +89,44 @@ fn production_transport_bounds_timeout_cancellation_and_output() {
     );
     assert_eq!(overflow, Err(Failure::OutputLimit));
 }
+
+#[test]
+fn actual_codex_error_shapes_are_sanitized_without_guessing() {
+    assert_eq!(
+        typed_codex_error(Some(&json!("usageLimitExceeded"))),
+        Some(Failure::Quota)
+    );
+    assert_eq!(
+        typed_codex_error(Some(&json!("sessionBudgetExceeded"))),
+        Some(Failure::Limit)
+    );
+    assert_eq!(
+        typed_codex_error(Some(&json!({
+            "httpConnectionFailed": {"httpStatusCode": 401}
+        }))),
+        Some(Failure::Authentication)
+    );
+    assert_eq!(
+        typed_codex_error(Some(&json!({
+            "httpConnectionFailed": {"httpStatusCode": 503}
+        }))),
+        Some(Failure::Network)
+    );
+    assert_eq!(typed_codex_error(Some(&json!("unknown"))), None);
+
+    let failure = |severity: &str, category: &str| {
+        json!({"jetbrains":{"air":{"sessionFailure":{
+            "id":"failure", "revision":1, "category":category,
+            "severity":severity, "title":"not exposed", "actions":[]
+        }}}})
+    };
+    assert_eq!(failure_meta(Some(&failure("warning", "limit"))), None);
+    assert_eq!(
+        failure_meta(Some(&failure("error", "limit"))),
+        Some(Failure::Limit)
+    );
+    assert_eq!(
+        failure_meta(Some(&failure("error", "access"))),
+        Some(Failure::Authentication)
+    );
+}

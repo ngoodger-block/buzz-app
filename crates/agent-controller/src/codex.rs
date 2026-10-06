@@ -1,6 +1,7 @@
 //! Canonical Codex CLI/adapter binding shared by readiness and later execution.
 //! Resolution never authenticates, reads a model catalog, or mutates Codex state.
-use crate::{installed, Result};
+use crate::{installed, AiConfiguration, Result};
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
     ffi::{OsStr, OsString},
@@ -52,6 +53,103 @@ pub struct CodexContext {
     environment: BTreeMap<OsString, OsString>,
 }
 
+/// Readiness evidence for one exact saved launch context.
+#[derive(Clone)]
+pub struct CodexLaunchPreflight {
+    context: CodexContext,
+}
+
+/// Native-only validation input. Equality binds a proof to the exact submitted
+/// edit, effective execution settings, and resolved Codex launch context.
+#[derive(Clone, PartialEq)]
+pub struct CodexValidationDraft {
+    context: CodexContext,
+    configuration: AiConfiguration,
+    model: String,
+    input: Value,
+    execution: Value,
+}
+
+impl CodexValidationDraft {
+    pub(crate) fn new(
+        context: CodexContext,
+        configuration: AiConfiguration,
+        model: String,
+        input: Value,
+        execution: Value,
+    ) -> Self {
+        Self {
+            context,
+            configuration,
+            model,
+            input,
+            execution,
+        }
+    }
+
+    /// Exact adapter, CLI, interpreter, environment, and workspace binding.
+    pub fn context(&self) -> &CodexContext {
+        &self.context
+    }
+
+    /// Explicit Default or Advanced selection to validate before inference.
+    pub fn configuration(&self) -> &AiConfiguration {
+        &self.configuration
+    }
+
+    /// Model selected by Advanced configuration; blank for Default.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Opaque digest of the exact resolved launch and effective execution input.
+    pub fn commitment(&self) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        let environment: Vec<_> = self
+            .context
+            .environment
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.to_string_lossy().into_owned(),
+                )
+            })
+            .collect();
+        let value = serde_json::json!({
+            "adapter": self.context.adapter.to_string_lossy(),
+            "cli": self.context.cli.to_string_lossy(),
+            "interpreter": self.context.interpreter.as_ref().map(|path| path.to_string_lossy()),
+            "cliInterpreter": self.context.cli_interpreter.as_ref().map(|path| path.to_string_lossy()),
+            "workspace": self.context.workspace.to_string_lossy(),
+            "environment": environment,
+            "configuration": self.configuration,
+            "model": self.model,
+            "input": self.input,
+            "execution": self.execution,
+        });
+        let bytes = serde_json::to_vec(&value).map_err(|_| "Could not bind Codex validation")?;
+        Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
+}
+
+impl CodexLaunchPreflight {
+    /// Seal one exact context after native readiness has verified it.
+    pub fn new(context: CodexContext) -> Self {
+        Self { context }
+    }
+
+    pub(crate) fn check(&self, current: &Option<CodexContext>) -> Result<()> {
+        (current.as_ref() == Some(&self.context))
+            .then_some(())
+            .ok_or_else(|| "Codex binding changed during readiness; retry Start".into())
+    }
+
+    pub(crate) fn context(&self) -> &CodexContext {
+        &self.context
+    }
+}
+
 impl CodexContext {
     /// Resolve the device-selected adapter and CLI without falling back to an
     /// adapter-bundled Codex engine.
@@ -101,6 +199,15 @@ impl CodexContext {
         directories.extend(default_directories());
         let adapter_command = bind(adapter, &directories, "Codex ACP adapter")?;
         let cli_command = bind(cli, &directories, "Codex CLI")?;
+        if let Some(path) = &adapter_command.script {
+            let value = path.as_os_str().to_string_lossy();
+            if value.contains(',') || value.trim() != value {
+                return Err(
+                    "Codex ACP adapter path cannot contain a comma or surrounding whitespace"
+                        .into(),
+                );
+            }
+        }
         let adapter = adapter_command.selected.clone();
         let cli = cli_command.selected.clone();
         let interpreter = adapter_command
@@ -167,6 +274,59 @@ impl CodexContext {
         self.command(&self.cli_command)
     }
 
+    /// Exact executable and comma-transport-safe arguments for bundled Buzz ACP.
+    pub(crate) fn adapter_launch(&self, configured: &[String]) -> Result<(PathBuf, Vec<String>)> {
+        if !configured.is_empty() {
+            return Err("Native Codex does not accept custom adapter arguments".into());
+        }
+        let mut args = Vec::with_capacity(usize::from(self.adapter_command.script.is_some()));
+        if let Some(script) = &self.adapter_command.script {
+            args.push(script.to_string_lossy().into_owned());
+        }
+        if args
+            .iter()
+            .any(|arg| arg.is_empty() || arg.contains(',') || arg.trim() != arg)
+        {
+            return Err("Codex ACP adapter arguments must be nonempty, comma-free, and have no surrounding whitespace".into());
+        }
+        Ok((self.adapter_command.program.clone(), args))
+    }
+
+    /// Confirm the saved selector still names the exact adapter bound by this
+    /// context. Launch must repeat this check even when a caller pre-resolved
+    /// readiness so a mismatched record cannot borrow unrelated evidence.
+    pub(crate) fn verify_adapter(&self, configured: &str) -> Result<()> {
+        let selected = Path::new(configured)
+            .canonicalize()
+            .map_err(|_| "Saved Codex ACP adapter is missing")?;
+        (selected == self.adapter)
+            .then_some(())
+            .ok_or_else(|| "Saved Codex ACP adapter no longer matches the selected binding".into())
+    }
+
+    /// Apply the same isolated CLI, interpreter, full-access, and path binding
+    /// used by readiness. Host-owned identity and relay values are added later.
+    pub(crate) fn apply_launch_environment(
+        &self,
+        command: &mut Command,
+        runtime_directory: &Path,
+    ) -> Result<()> {
+        let path = self
+            .environment
+            .get(OsStr::new("PATH"))
+            .ok_or("Codex binding has no tools path")?;
+        let path = std::env::join_paths(
+            std::iter::once(runtime_directory.to_path_buf()).chain(std::env::split_paths(path)),
+        )
+        .map_err(|_| "Invalid Codex runtime tools path")?;
+        command
+            .env_clear()
+            .envs(&self.environment)
+            .env("PATH", path)
+            .current_dir(&self.workspace);
+        Ok(())
+    }
+
     fn command(&self, executable: &BoundExecutable) -> Command {
         let mut command = Command::new(&executable.program);
         if let Some(script) = &executable.script {
@@ -187,6 +347,18 @@ fn agent_environment(effective: &BTreeMap<String, String>) -> BTreeMap<String, S
         .filter(|(key, _)| PASSTHROUGH.contains(&key.as_str()) || key.as_str() == "CODEX_CONFIG")
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect()
+}
+
+/// Native Codex records accept only binding inputs plus the existing host-owned
+/// worker-count preference. Legacy records are not retroactively constrained.
+pub(crate) fn validate_native_environment(effective: &BTreeMap<String, String>) -> Result<()> {
+    if let Some(key) = effective
+        .keys()
+        .find(|key| !PASSTHROUGH.contains(&key.as_str()) && key.as_str() != "BUZZ_ACP_AGENTS")
+    {
+        return Err(format!("Codex binding does not permit {key}"));
+    }
+    Ok(())
 }
 
 fn bind(path: &Path, directories: &[PathBuf], label: &str) -> Result<BoundExecutable> {

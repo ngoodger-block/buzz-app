@@ -183,6 +183,54 @@ fn conversation_context_inherits_defaults_unless_agent_or_imported_definition_se
 }
 
 #[test]
+fn native_codex_never_inherits_buzz_model_effort_or_environment_defaults() {
+    let mut agent = fixture();
+    agent.harness.integration = Some(crate::HarnessIntegration::Codex);
+    agent.harness.command = "/tools/codex-acp".into();
+    agent.harness.model.clear();
+    agent.harness.provider.clear();
+    agent.harness.configuration = Some(crate::AiConfiguration::Default);
+    agent.environment.clear();
+    agent.imported = serde_json::json!({"record": {"effort_level": "legacy-high"}});
+    let defaults = AgentDefaults {
+        harness: "buzz-agent".into(),
+        provider: "default-provider".into(),
+        model: "default-model".into(),
+        effort: "default-effort".into(),
+        session_policy: SessionPolicy::Channel,
+        environment: BTreeMap::from([
+            ("BUZZ_AGENT_MODEL".into(), "inherited-model".into()),
+            ("OPENAI_API_KEY".into(), "must-not-enter-codex".into()),
+        ]),
+    };
+
+    let effective = effective(&agent, &defaults);
+    assert!(effective.harness.model.is_empty());
+    assert!(effective.environment.is_empty());
+    assert_eq!(effort(&effective), None);
+
+    // Native identity wins over a renamed adapter's basename in every build
+    // default projection. A Codex adapter named `buzz-agent` remains Codex.
+    agent.harness.command = "/tools/buzz-agent".into();
+    let build = crate::BuildDefaults {
+        provider: "databricks_v2".into(),
+        model: "build-model".into(),
+        host: "https://build.example".into(),
+        filter: "build-*".into(),
+        owner_only: false,
+    };
+    let resolved = build.resolve(&agent.harness, &agent.environment);
+    assert!(resolved.model.is_empty());
+    assert!(resolved.provider.is_empty());
+    assert!(resolved.databricks.is_none());
+    let launch = build.launch_view(&agent.harness, &agent.environment);
+    assert_eq!(launch.model, None);
+    assert_eq!(launch.provider, None);
+    assert_eq!(launch.model_env, None);
+    assert_eq!(launch.provider_env, None);
+}
+
+#[test]
 fn omitted_policy_in_defaults_edit_preserves_the_saved_default() {
     let mut saved = defaults("buzz-agent");
     saved.session_policy = SessionPolicy::Thread;

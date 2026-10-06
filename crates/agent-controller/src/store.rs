@@ -56,10 +56,42 @@ impl Binding {
 struct Document {
     version: u32,
     agents: Vec<Agent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_create: Option<PendingCreateRecovery>,
     #[serde(default)]
     parked: BTreeMap<String, ParkedIdentity>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
+}
+/// Public-only durable identity commitment for interrupted native creation.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingCreateRecovery {
+    pub request_id: String,
+    pub agent_id: String,
+    pub pubkey: String,
+    pub destination: String,
+    pub owner: String,
+    pub commitment: String,
+}
+impl PendingCreateRecovery {
+    fn validate(&self) -> Result<()> {
+        if self.request_id.len() > 64
+            || self.request_id.is_empty()
+            || self.agent_id.len() > 256
+            || !crate::config::canonical_key(&self.pubkey)
+            || !crate::config::canonical_key(&self.owner)
+            || crate::config::agent_id(
+                &self.pubkey,
+                &crate::config::canonical_relay(&self.destination)?,
+            ) != self.agent_id
+            || self.commitment.len() != 64
+            || !self.commitment.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err("Saved pending create is malformed; left unchanged".into());
+        }
+        Ok(())
+    }
 }
 impl Document {
     fn protection_revision(&self) -> Result<u64> {
@@ -233,6 +265,57 @@ impl Store {
     }
     pub(crate) fn agents(&self) -> Result<Vec<Agent>> {
         Ok(self.read()?.agents)
+    }
+    /// Inspect public recovery metadata without opening secure credential storage.
+    pub fn pending_create(&self) -> Result<Option<PendingCreateRecovery>> {
+        Ok(self.read()?.pending_create)
+    }
+    /// Durably reserve one exact public creation commitment before key I/O.
+    pub fn stage_pending_create(&mut self, pending: PendingCreateRecovery) -> Result<()> {
+        pending.validate()?;
+        let mut doc = self.read()?;
+        match &doc.pending_create {
+            Some(current) if current == &pending => return Ok(()),
+            Some(_) => return Err("Another agent creation requires recovery first".into()),
+            None => {}
+        }
+        doc.pending_create = Some(pending);
+        self.write(&doc)
+    }
+    /// Atomically insert a recovered record and retire its exact journal.
+    pub(crate) fn finish_pending_create(
+        &mut self,
+        pending: &PendingCreateRecovery,
+        agent: Agent,
+    ) -> Result<()> {
+        let mut doc = self.read()?;
+        if doc.pending_create.as_ref() != Some(pending) {
+            return Err("Pending agent creation changed; inspect recovery again".into());
+        }
+        if agent.id != pending.agent_id
+            || agent.pubkey != pending.pubkey
+            || agent.credential_id != pending.agent_id
+        {
+            return Err("Recovered agent identity does not match its journal".into());
+        }
+        if let Some(existing) = doc.agents.iter().find(|saved| saved.id == agent.id) {
+            if existing.pubkey != agent.pubkey || existing.credential_id != agent.credential_id {
+                return Err("Recovered agent conflicts with saved settings".into());
+            }
+        } else {
+            doc.agents.push(agent);
+        }
+        doc.pending_create = None;
+        self.write(&doc)
+    }
+    /// Clear the exact journal only after credential cleanup is confirmed.
+    pub fn discard_pending_create(&mut self, pending: &PendingCreateRecovery) -> Result<()> {
+        let mut doc = self.read()?;
+        if doc.pending_create.as_ref() != Some(pending) {
+            return Err("Pending agent creation changed; inspect recovery again".into());
+        }
+        doc.pending_create = None;
+        self.write(&doc)
     }
     /// Device-wide defaults; absent means the built-in Buzz Agent defaults.
     pub(crate) fn defaults(&self) -> Result<AgentDefaults> {
@@ -595,6 +678,9 @@ fn validate(doc: &Document) -> Result<()> {
         })
     {
         return Err("Invalid parked identity inventory; left unchanged".into());
+    }
+    if let Some(pending) = &doc.pending_create {
+        pending.validate()?;
     }
     let mut ids = BTreeSet::new();
     for agent in &doc.agents {

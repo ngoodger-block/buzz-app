@@ -23,6 +23,32 @@ pub(crate) enum Failure {
     OutputLimit,
     Cleanup,
     Incompatible,
+    Rejected,
+    Authentication,
+    Quota,
+    Context,
+    Limit,
+    Network,
+    Model,
+    Effort,
+}
+
+impl Failure {
+    pub(crate) fn model(self) -> Self {
+        if self == Self::Rejected {
+            Self::Model
+        } else {
+            self
+        }
+    }
+
+    pub(crate) fn effort(self) -> Self {
+        if self == Self::Rejected {
+            Self::Effort
+        } else {
+            self
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -51,6 +77,15 @@ impl Limits {
             output_bytes: 1024 * 1024,
             request_bytes: 16 * 1024,
             messages: 2_000,
+        }
+    }
+
+    pub(crate) fn validation() -> Self {
+        Self {
+            deadline: Duration::from_secs(60),
+            output_bytes: 1024 * 1024,
+            request_bytes: 128 * 1024,
+            messages: 4_000,
         }
     }
 }
@@ -159,6 +194,16 @@ impl Client {
         params: Value,
         current: &impl Fn() -> bool,
     ) -> Result<Value, Failure> {
+        self.request_observing(method, params, current, &mut |_| Ok(()))
+    }
+
+    pub(crate) fn request_observing(
+        &mut self,
+        method: &str,
+        params: Value,
+        current: &impl Fn() -> bool,
+        notification: &mut impl FnMut(&Value) -> Result<(), Failure>,
+    ) -> Result<Value, Failure> {
         self.next_id = self.next_id.checked_add(1).ok_or(Failure::Incompatible)?;
         let id = self.next_id;
         let mut bytes = serde_json::to_vec(&json!({
@@ -198,6 +243,10 @@ impl Client {
                         return Err(Failure::Incompatible);
                     }
                     if value.get("method").is_some() {
+                        if value.get("jsonrpc") != Some(&Value::String("2.0".into())) {
+                            return Err(Failure::Incompatible);
+                        }
+                        notification(&value)?;
                         continue;
                     }
                     if value.get("jsonrpc") != Some(&Value::String("2.0".into()))
@@ -205,8 +254,8 @@ impl Client {
                     {
                         return Err(Failure::Incompatible);
                     }
-                    if value.get("error").is_some() {
-                        return Err(Failure::Incompatible);
+                    if let Some(error) = value.get("error") {
+                        return Err(typed_error(error));
                     }
                     return value.get("result").cloned().ok_or(Failure::Incompatible);
                 }
@@ -247,7 +296,16 @@ impl Client {
             "initialize",
             json!({
                 "protocolVersion": 1,
-                "clientCapabilities": {},
+                "clientCapabilities": {
+                    "_meta": {
+                        "jetbrains": {
+                            "air": {
+                                "version": 1,
+                                "capabilities": ["sessionFailure"]
+                            }
+                        }
+                    }
+                },
                 "clientInfo": {
                     "name": "buzz-codex",
                     "version": "0.0.0"
@@ -286,6 +344,58 @@ impl Client {
             return Err(Failure::Incompatible);
         }
         Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn typed_error(error: &Value) -> Failure {
+    let info = error
+        .get("data")
+        .and_then(|data| data.get("codexErrorInfo"));
+    typed_codex_error(info).unwrap_or(Failure::Rejected)
+}
+
+#[cfg(unix)]
+fn typed_codex_error(info: Option<&Value>) -> Option<Failure> {
+    match info? {
+        Value::String(value) => match value.as_str() {
+            "unauthorized" => Some(Failure::Authentication),
+            "usageLimitExceeded" | "rateLimitExceeded" => Some(Failure::Quota),
+            "sessionBudgetExceeded" => Some(Failure::Limit),
+            "contextWindowExceeded" => Some(Failure::Context),
+            _ => None,
+        },
+        Value::Object(value)
+            if value.contains_key("httpConnectionFailed")
+                || value.contains_key("responseStreamConnectionFailed")
+                || value.contains_key("responseStreamDisconnected")
+                || value.contains_key("responseTooManyFailedAttempts") =>
+        {
+            if value
+                .values()
+                .any(|details| details.get("httpStatusCode").and_then(Value::as_u64) == Some(401))
+            {
+                Some(Failure::Authentication)
+            } else {
+                Some(Failure::Network)
+            }
+        }
+        _ => None,
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn failure_meta(value: Option<&Value>) -> Option<Failure> {
+    let failure = value?.get("jetbrains")?.get("air")?.get("sessionFailure")?;
+    if failure.get("severity").and_then(Value::as_str) != Some("error") {
+        return None;
+    }
+    let category = failure.get("category")?.as_str()?;
+    match category {
+        "access" => Some(Failure::Authentication),
+        "connection" => Some(Failure::Network),
+        "limit" => Some(Failure::Limit),
+        _ => Some(Failure::Incompatible),
     }
 }
 

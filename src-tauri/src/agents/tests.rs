@@ -23,17 +23,59 @@ impl Credentials for RejectingCredentials {
     }
 }
 
+struct AbsentCredentials;
+impl Credentials for AbsentCredentials {
+    fn delete(&self, _: &str, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn read_legacy(&self, _: LegacySource, _: &str) -> Result<Secret, String> {
+        unreachable!()
+    }
+    fn read(&self, _: &str, _: &str) -> Result<Option<Secret>, String> {
+        Ok(None)
+    }
+    fn add(&self, _: &str, _: &Secret) -> Result<(), String> {
+        unreachable!()
+    }
+}
+
+#[test]
+fn journal_without_a_durable_key_requires_explicit_discard() {
+    let pending = buzz_agent_controller::PendingCreateRecovery {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        agent_id: "pending".into(),
+        pubkey: "ab".repeat(32),
+        destination: "wss://relay.example".into(),
+        owner: "cd".repeat(32),
+        commitment: "ef".repeat(32),
+    };
+    assert_eq!(
+        read_create_recovery_key(&AbsentCredentials, &pending)
+            .err()
+            .unwrap(),
+        "The pending create has no durable key; discard it and validate again"
+    );
+    discard_create_recovery_key(&AbsentCredentials, &pending).unwrap();
+}
+
 impl AgentHost {
     fn open(paths: Result<(PathBuf, PathBuf, PathBuf), String>) -> Self {
+        Self::open_with_bundle(paths, Err(RUNTIME_GATE.into()))
+    }
+    fn open_with_bundle(
+        paths: Result<(PathBuf, PathBuf, PathBuf), String>,
+        bundle: Result<RuntimeBundle, String>,
+    ) -> Self {
+        Self::open_with_credentials(paths, bundle, Arc::new(RejectingCredentials))
+    }
+    fn open_with_credentials(
+        paths: Result<(PathBuf, PathBuf, PathBuf), String>,
+        bundle: Result<RuntimeBundle, String>,
+        credentials: Arc<dyn Credentials>,
+    ) -> Self {
         Self(
             Arc::new(Mutex::new(paths.and_then(|(root, legacy, workspace)| {
-                Host::open(
-                    root,
-                    legacy,
-                    workspace,
-                    Err(RUNTIME_GATE.into()),
-                    Arc::new(RejectingCredentials),
-                )
+                Host::open(root, legacy, workspace, bundle, credentials)
             }))),
             Arc::new(AtomicBool::new(false)),
             Arc::new(tokio::sync::Mutex::new(())),
@@ -68,6 +110,8 @@ pub(crate) fn fixture_with_models(
         .manage(host.clone())
         .manage(crate::harness_setup::HarnessSetup::default())
         .manage(model_host)
+        .manage(Arc::new(crate::codex_readiness::Host::default()))
+        .manage(Arc::new(crate::codex_validation::Host::default()))
         .manage(crate::identity::IdentityHost::fixture())
         .invoke_handler(crate::commands())
         .build(crate::app_context())
@@ -495,7 +539,7 @@ fn real_ipc_snapshot_save_cas_stop_and_launch_gate() {
         before["harnessOptions"][3]["configurationPolicy"],
         json!({
             "authentication": "external", "provider": "external",
-            "supportedModes": [], "model": "optional", "effortDiscovery": "unknown",
+            "supportedModes": ["default", "advanced"], "model": "optional", "effortDiscovery": "modelSpecific",
             "selectorEnvironment": null
         })
     );
@@ -806,7 +850,7 @@ mod overlap {
     const REFUSAL: &str = "Synthetic credential refusal";
 
     // Verified manifest over inert scripts. Credential refusal precedes any spawn.
-    fn synthetic_bundle(directory: &std::path::Path) -> RuntimeBundle {
+    pub(super) fn synthetic_bundle(directory: &std::path::Path) -> RuntimeBundle {
         use sha2::{Digest, Sha256};
         use std::os::unix::fs::PermissionsExt;
         std::fs::create_dir_all(directory).unwrap();
@@ -2376,7 +2420,7 @@ fn poisoned_native_state_is_not_reported_as_transient_contention() {
 #[tokio::test]
 async fn native_create_waits_for_a_snapshot_and_keeps_its_prepared_identity() {
     use tauri::Manager;
-    let (_dir, host, app, _view) = fixture();
+    let (dir, host, app, _view) = fixture();
     let (entered, acquired) = tokio::sync::oneshot::channel();
     let (release, wait) = std::sync::mpsc::channel();
     let snapshot = tokio::spawn(run(host.clone(), move |h| {
@@ -2386,11 +2430,20 @@ async fn native_create_waits_for_a_snapshot_and_keeps_its_prepared_identity() {
     }));
     acquired.await.unwrap();
     let request_id = uuid::Uuid::new_v4().to_string();
+    let edit: AgentEdit = serde_json::from_value(json!({
+        "name": "Created", "systemPrompt": "", "workspace": dir.path(),
+        "harness": {"command": "buzz-agent", "args": [], "model": "sample", "provider": "sample"},
+        "environment": {}
+    }))
+    .unwrap();
     let mut creating = std::pin::pin!(agent_control_create_prepare(
+        app.state(),
         app.state(),
         request_id.clone(),
         "wss://relay.example".into(),
         "ab".repeat(32),
+        edit.clone(),
+        None,
     ));
     assert_pending(creating.as_mut()).await;
     release.send(()).unwrap();
@@ -2398,9 +2451,12 @@ async fn native_create_waits_for_a_snapshot_and_keeps_its_prepared_identity() {
     assert!(snapshot.await.unwrap().is_ok());
     let retried = agent_control_create_prepare(
         app.state(),
+        app.state(),
         request_id,
         "wss://relay.example".into(),
         "ab".repeat(32),
+        edit,
+        None,
     )
     .await
     .unwrap();
@@ -2415,10 +2471,12 @@ fn native_create_authorization_binds_the_prepared_key_owner_and_identity() {
     let other = "cd".repeat(32);
     let prepare = |owner: &str| {
         let request = uuid::Uuid::new_v4().to_string();
+        let edit = json!({"name":"Created","systemPrompt":"","workspace":dir.path(),
+            "harness":{"command":"buzz-agent","args":[],"model":"chosen","provider":"databricks_v2"},"environment":{}});
         let prepared = invoke(
             &view,
             "agent_control_create_prepare",
-            json!({"requestId": request, "destination": "https://relay.example", "owner": owner}),
+            json!({"requestId": request, "destination": "https://relay.example", "owner": owner, "edit": edit}),
         )
         .unwrap();
         (request, prepared["pubkey"].as_str().unwrap().to_owned())
@@ -2476,6 +2534,32 @@ fn native_create_authorization_binds_the_prepared_key_owner_and_identity() {
     );
     // The unchanged verifier accepts the real attestation; only synthetic custody refuses.
     assert_eq!(commit(&auth), json!(IMPORT_GATE));
+    let recovery = invoke(&view, "agent_control_create_recovery", json!({})).unwrap();
+    assert_eq!(recovery["requestId"], request);
+    assert_eq!(recovery["pubkey"], pubkey);
+    let changed_edit = json!({"name":"Changed","systemPrompt":"","workspace":dir.path().to_str().unwrap(),
+        "harness":{"command":"buzz-agent","args":[],"model":"chosen","provider":"databricks_v2"},"environment":{}});
+    assert_eq!(
+        invoke(
+            &view,
+            "agent_control_create_resume",
+            json!({"requestId":request,"edit":changed_edit,"auth":auth.to_string()})
+        )
+        .unwrap_err(),
+        json!("Create recovery input changed; use the original settings or discard it")
+    );
+    assert_eq!(
+        invoke(
+            &view,
+            "agent_control_create_discard",
+            json!({"requestId":request})
+        )
+        .unwrap_err(),
+        json!(IMPORT_GATE)
+    );
+    assert!(invoke(&view, "agent_control_create_recovery", json!({}))
+        .unwrap()
+        .is_object());
 }
 
 #[tokio::test]
@@ -2497,6 +2581,92 @@ async fn dropped_caller_does_not_release_a_running_native_operation() {
     assert_pending(next.as_mut()).await;
     release.send(()).unwrap();
     assert!(next.await.is_ok());
+}
+
+#[tokio::test]
+async fn aborted_discard_keeps_native_lane_until_credential_io_retires() {
+    use tauri::Manager;
+    struct BlockingAbsent {
+        entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl Credentials for BlockingAbsent {
+        fn delete(&self, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn read_legacy(&self, _: LegacySource, _: &str) -> Result<Secret, String> {
+            unreachable!()
+        }
+        fn read(&self, _: &str, _: &str) -> Result<Option<Secret>, String> {
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                entered.send(()).unwrap();
+                self.release.lock().unwrap().recv().unwrap();
+            }
+            Ok(None)
+        }
+        fn add(&self, _: &str, _: &Secret) -> Result<(), String> {
+            unreachable!()
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let (entered, acquired) = tokio::sync::oneshot::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    let credentials = Arc::new(BlockingAbsent {
+        entered: Mutex::new(Some(entered)),
+        release: Mutex::new(wait),
+    });
+    let host = AgentHost::open_with_credentials(
+        Ok((
+            dir.path().join("store"),
+            dir.path().join("legacy"),
+            dir.path().join("workspace"),
+        )),
+        Err(RUNTIME_GATE.into()),
+        credentials,
+    );
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let pending = buzz_agent_controller::PendingCreateRecovery {
+        request_id: request_id.clone(),
+        agent_id: format!(
+            "{}-{}",
+            "ab".repeat(32),
+            "733db93c5a38b650794422a480fab67f1dd8f6f40112c360f9814dfaec3bfcbb"
+        ),
+        pubkey: "ab".repeat(32),
+        destination: "wss://relay.example".into(),
+        owner: "cd".repeat(32),
+        commitment: "ef".repeat(32),
+    };
+    host.with(|host| host.controller.stage_create_recovery(pending.clone()))
+        .unwrap();
+    let app = mock_builder()
+        .manage(host.clone())
+        .manage(crate::harness_setup::HarnessSetup::default())
+        .manage(crate::agent_models::ModelHost::new(Ok(dir
+            .path()
+            .join("models"))))
+        .manage(Arc::new(crate::codex_readiness::Host::default()))
+        .manage(Arc::new(crate::codex_validation::Host::default()))
+        .manage(crate::identity::IdentityHost::fixture())
+        .invoke_handler(crate::commands())
+        .build(crate::app_context())
+        .unwrap();
+
+    let mut discard = Box::pin(agent_control_create_discard(app.state(), request_id));
+    assert_pending(discard.as_mut()).await;
+    acquired.await.unwrap();
+    drop(discard);
+    assert!(host.2.try_lock().is_err());
+    let mut replacement = std::pin::pin!(run(host.clone(), |host| host.snapshot()));
+    assert_pending(replacement.as_mut()).await;
+    release.send(()).unwrap();
+    assert!(replacement.await.is_ok());
+    assert_eq!(
+        host.with(|host| host.controller.pending_create_recovery())
+            .unwrap(),
+        Some(pending)
+    );
 }
 
 #[tokio::test]
@@ -2629,4 +2799,255 @@ async fn initialization_failure_and_shutdown_refuse_queued_registration() {
             }
         );
     }
+}
+
+#[cfg(unix)]
+fn gated_codex_context(root: &std::path::Path) -> buzz_agent_controller::codex::CodexContext {
+    use std::os::unix::fs::PermissionsExt;
+    let adapter = root.join("gated-codex-acp");
+    let cli = root.join("gated-codex");
+    let workspace = root.join("workspace");
+    let marker = root.join("codex-check-entered");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        &adapter,
+        format!(
+            r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '@agentclientprotocol/codex-acp 1.10.0\n'
+  exit 0
+fi
+IFS= read -r request
+printf entered > '{}'
+/bin/sleep 60
+"#,
+            marker.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &cli,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli 0.151.0\n'
+elif [ "$1" = "login" ] && [ "$2" = "status" ]; then
+  printf 'Logged in\n'
+else
+  exit 1
+fi
+"#,
+    )
+    .unwrap();
+    for path in [&adapter, &cli] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    buzz_agent_controller::codex::CodexContext::new(&adapter, &cli, &workspace, &BTreeMap::new())
+        .unwrap()
+}
+
+#[cfg(unix)]
+fn incompatible_codex_context(
+    root: &std::path::Path,
+) -> buzz_agent_controller::codex::CodexContext {
+    use std::os::unix::fs::PermissionsExt;
+    let adapter = root.join("incompatible-codex-acp");
+    let cli = root.join("incompatible-codex");
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        &adapter,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf '@agentclientprotocol/codex-acp 1.10.0\n'
+  exit 0
+fi
+IFS= read -r request
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"lookalike-codex-acp","version":"1.10.0"}}}'
+sleep 60
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &cli,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'codex-cli 0.151.0\n'
+elif [ "$1" = "login" ] && [ "$2" = "status" ]; then printf 'Logged in\n'
+else exit 1
+fi
+"#,
+    )
+    .unwrap();
+    for path in [&adapter, &cli] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    buzz_agent_controller::codex::CodexContext::new(&adapter, &cli, &workspace, &BTreeMap::new())
+        .unwrap()
+}
+
+#[cfg(unix)]
+fn seed_native_codex(
+    root: &std::path::Path,
+    context: &buzz_agent_controller::codex::CodexContext,
+) -> String {
+    let pubkey = "ab".repeat(32);
+    let id = format!(
+        "{}-{}",
+        pubkey, "733db93c5a38b650794422a480fab67f1dd8f6f40112c360f9814dfaec3bfcbb"
+    );
+    std::fs::write(
+        root.join("store/agents.json"),
+        serde_json::to_vec(&json!({"version":1,"agents":[{
+            "id":id, "pubkey":pubkey, "relayUrl":"wss://relay.example", "name":"Codex fixture",
+            "systemPrompt":"Validate start ownership", "workspace":context.workspace,
+            "harness":{"integration":"codex","command":context.adapter,"args":[],"model":"",
+                "configuration":{"mode":"default"},"provider":""},
+            "environment":{}, "revision":1, "enabled":true, "credentialId":"missing-codex-key",
+            "authTag":null, "imported":null, "nativeCreated":true
+        }]}))
+        .unwrap(),
+    )
+    .unwrap();
+    id
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn dropped_codex_start_keeps_cleanup_reserved_until_native_retirement() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = AgentHost::open_with_bundle(
+        Ok((
+            dir.path().join("store"),
+            dir.path().join("legacy"),
+            dir.path().join("workspace"),
+        )),
+        Ok(overlap::synthetic_bundle(&dir.path().join("runtime"))),
+    );
+    let context = gated_codex_context(dir.path());
+    let id = seed_native_codex(dir.path(), &context);
+    let selected = context.clone();
+    host.with(|host| {
+        host.codex_context = Some(Arc::new(move |_, _| Ok(Some(selected.clone()))));
+        Ok(())
+    })
+    .unwrap();
+    let operation = {
+        let host = host.clone();
+        let id = id.clone();
+        tokio::spawn(async move { start(host, id, Action::Start, false, None, None).await })
+    };
+    let entered = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !dir.path().join("codex-check-entered").is_file() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    if entered.is_err() && operation.is_finished() {
+        match operation.await {
+            Ok(Err(error)) => panic!("Codex Start failed before readiness: {error}"),
+            Ok(Ok(snapshot)) => panic!(
+                "Codex Start finished before readiness: {:?}",
+                snapshot.data.agents[0].error
+            ),
+            Err(error) => panic!("Codex Start task failed before readiness: {error}"),
+        }
+    }
+    entered.expect("Codex readiness worker did not start");
+    let (retirement_entered, retirement_release) = host
+        .with(|host| {
+            host.starts
+                .get(&id)
+                .and_then(|pending| pending.codex.as_ref())
+                .map(|pending| pending.owner.hold_retirement())
+                .ok_or("Codex readiness owner is missing".into())
+        })
+        .unwrap();
+
+    operation.abort();
+    assert!(matches!(operation.await, Err(error) if error.is_cancelled()));
+    tokio::time::timeout(std::time::Duration::from_secs(6), async {
+        while !retirement_entered.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("Codex readiness worker did not reach retirement");
+    let stopped = run(host.clone(), {
+        let id = id.clone();
+        move |host| host.action(&id, Action::Stop)
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        stopped.data.agents[0].status,
+        ProcessStatus::Stopped
+    ));
+    let replacement = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        start(host.clone(), id.clone(), Action::Start, false, None, None),
+    )
+    .await
+    .expect("replacement Start overlapped the retiring native worker");
+    assert_eq!(
+        replacement.err().as_deref(),
+        Some("Previous Codex readiness cleanup is still in progress")
+    );
+
+    drop(retirement_release);
+    tokio::time::timeout(std::time::Duration::from_secs(6), async {
+        loop {
+            let retired = host
+                .with(|host| {
+                    Ok(host
+                        .codex_retiring
+                        .get(&id)
+                        .map(|pending| pending.owner.retirement())
+                        .transpose()?
+                        .unwrap_or(true))
+                })
+                .unwrap();
+            if retired {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("native Codex readiness owner did not retire");
+    host.with(|host| host.check_codex_retirement(&id)).unwrap();
+    assert!(host
+        .with(|host| Ok(!host.codex_retiring.contains_key(&id)))
+        .unwrap());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_start_rejects_a_controlled_initialize_failure_before_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = AgentHost::open_with_bundle(
+        Ok((
+            dir.path().join("store"),
+            dir.path().join("legacy"),
+            dir.path().join("workspace"),
+        )),
+        Ok(overlap::synthetic_bundle(&dir.path().join("runtime"))),
+    );
+    let context = incompatible_codex_context(dir.path());
+    let id = seed_native_codex(dir.path(), &context);
+    let selected = context.clone();
+    host.with(|host| {
+        host.codex_context = Some(Arc::new(move |_, _| Ok(Some(selected.clone()))));
+        Ok(())
+    })
+    .unwrap();
+    let snapshot = start(host.clone(), id, Action::Start, false, None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        snapshot.data.agents[0].error.as_deref(),
+        Some("The selected Codex ACP adapter is incompatible")
+    );
+    assert!(host.with(|host| Ok(host.starts.is_empty())).unwrap());
+    assert!(host
+        .with(|host| Ok(host.codex_retiring.is_empty()))
+        .unwrap());
 }

@@ -89,11 +89,13 @@ fn codex_policy_requires_explicit_native_identity() {
     let basename = HarnessConfigurationPolicy::for_command("codex-acp");
     assert_eq!(managed.authentication, AuthenticationPolicy::External);
     assert_eq!(managed.provider, ProviderPolicy::External);
-    assert!(managed.supported_modes.is_empty());
-    assert_eq!(managed, basename);
-    // Equality of today's static fields does not turn the basename into an
-    // integration identity; only native registration carries that authority.
-    assert_eq!(HarnessIntegration::Codex, HarnessIntegration::Codex);
+    assert_eq!(
+        managed.supported_modes,
+        &[ConfigurationMode::Default, ConfigurationMode::Advanced]
+    );
+    assert_eq!(managed.effort_discovery, EffortDiscovery::ModelSpecific);
+    assert!(basename.supported_modes.is_empty());
+    assert_eq!(basename.effort_discovery, EffortDiscovery::Unknown);
 }
 
 #[test]

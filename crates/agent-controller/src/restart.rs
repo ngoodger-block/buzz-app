@@ -73,6 +73,8 @@ pub(crate) fn spawn_config(agent: &Agent) -> Value {
         "name": agent.name,
         "system_prompt": agent.system_prompt,
         "workspace": agent.workspace,
+        "integration": agent.harness.integration,
+        "configuration": agent.harness.configuration,
         "command": harness.command,
         "args": harness.args,
         "model": selected.model,
