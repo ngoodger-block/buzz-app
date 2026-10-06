@@ -452,6 +452,7 @@ export function EditableInput({
       text: string,
       recipient?: MentionRecipient | readonly MentionRecipient[],
       range?: { start: number; end: number },
+      lineBreak = false,
     ) => {
       if (!editable() || composing.current) return false;
       if (range) setRange(range.start, range.end);
@@ -461,6 +462,7 @@ export function EditableInput({
         .filter((mark) => mark.type !== composerSchema.marks.recipient);
       text = text.replace(/\r\n?/g, "\n");
       const tr = closeHistory(editor.state.tr);
+      if (lineBreak) tr.setMeta("composer-line-break", true);
       if (recipient) {
         const recipients: readonly MentionRecipient[] = Array.isArray(recipient)
           ? recipient
@@ -1072,6 +1074,36 @@ export function EditableInput({
             editor.updateState(previous);
             return;
           }
+          // WebKit can leave a stale caret painted after a growing line break.
+          // Clear only its live DOM selection; ProseMirror restores the
+          // mapped selection as it updates the accepted document below.
+          if (
+            tr.getMeta("composer-line-break") &&
+            tr.docChanged &&
+            previous.selection instanceof TextSelection &&
+            previous.selection.empty &&
+            next.selection instanceof TextSelection &&
+            next.selection.empty &&
+            editable() &&
+            !composing.current &&
+            !editor.composing &&
+            editor.hasFocus() &&
+            /^Mac/.test(navigator.platform) &&
+            !navigator.maxTouchPoints &&
+            /AppleWebKit\//.test(navigator.userAgent) &&
+            !/(?:Chrome|Chromium|CriOS|Edg|OPR)\//.test(navigator.userAgent)
+          ) {
+            const native = editor.dom.ownerDocument.getSelection();
+            if (
+              native?.rangeCount === 1 &&
+              native.isCollapsed &&
+              native.anchorNode &&
+              native.focusNode &&
+              editor.dom.contains(native.anchorNode) &&
+              editor.dom.contains(native.focusNode)
+            )
+              native.removeAllRanges();
+          }
           editor.updateState(next);
           if (tr.docChanged) {
             scrollAfterTokens.current ||=
@@ -1485,8 +1517,12 @@ export function EditableInput({
           if (!editable() || composing.current || editor.composing)
             return false;
           const tr = composerBlockLineBreak(editor.state);
-          if (!tr) return insert("\n");
-          editor.dispatch(closeHistory(tr).scrollIntoView());
+          if (!tr) return insert("\n", undefined, undefined, true);
+          editor.dispatch(
+            closeHistory(tr)
+              .setMeta("composer-line-break", true)
+              .scrollIntoView(),
+          );
           editor.focus();
           return true;
         },
