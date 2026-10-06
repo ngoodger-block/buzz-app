@@ -613,7 +613,10 @@ test("inline member identity geometry and separate addition focus", async ({
     // Browser-only: an unbadged identity centers at rest and moves up to
     // reveal its key, without shifting the avatar, row or Add action.
     const row = add.locator("../..");
-    const name = row.getByText("Morgan", { exact: true });
+    // The typed letters are underlined in their own <mark>; measure the name.
+    const name = row
+      .getByText("Morgan", { exact: true })
+      .locator("xpath=ancestor-or-self::*[not(self::mark)][1]");
     const key = row.locator('[aria-hidden="true"].text-mono');
     await search.hover();
     await expect(key).toBeHidden();

@@ -19,10 +19,22 @@ import { ToastProvider } from "../../shared/design-system/ui/Toast";
 import { profileTarget } from "../../features/profiles/target";
 import { ChannelMembersButton } from "./ChannelMembersDialog";
 const stops: (() => void)[] = [];
+// jsdom lacks scrollIntoView; the search highlight keeps its row in view.
+beforeEach(() => {
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: vi.fn(),
+  });
+});
 afterEach(() => {
   cleanup();
+  Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
   for (const stop of stops.splice(0)) stop();
 });
+/** Matches a name whose typed letters are underlined in their own element. */
+const nameText = (text: string) => (_: string, element: Element | null) =>
+  element?.textContent === text &&
+  ![...element.children].some((child) => child.textContent === text);
 async function setup(
   type = "stream",
   missingNames = false,
@@ -204,6 +216,55 @@ it("searches outside the roster, prevents double submission, and moves confirmed
   expect(t.session.channels.list().channels[0]?.members).toContain(
     t.person.pubkey,
   );
+});
+it("highlights the first person not in the channel so Enter adds them once", async () => {
+  const t = await setup();
+  const add = await t.search();
+  const input = screen.getByRole("searchbox");
+  const row = add.closest("[data-highlighted]");
+  expect(row).not.toBeNull();
+  expect(row?.querySelector("mark")).toHaveTextContent("Morgan");
+  expect(screen.getByText("Morgan. Press Enter to add.")).toHaveAttribute(
+    "role",
+    "status",
+  );
+  t.hold();
+  await t.user.keyboard("{Enter}");
+  await vi.waitFor(() => expect(t.publish).toHaveBeenCalledOnce());
+  await t.user.keyboard("{Enter}");
+  expect(t.publish).toHaveBeenCalledOnce();
+  await act(async () => t.release());
+  await screen.findByText("Morgan is in the channel.");
+  expect(input).toHaveFocus();
+});
+it("ranks a matching agent of yours by name and keeps the highlight on its row as it arrives", async () => {
+  const t = await setup();
+  const agent = { pubkey: keypair().pubkey, name: "Mor" };
+  await t.user.type(screen.getByRole("searchbox"), "Mor");
+  const morgan = await screen.findByRole("button", { name: /^Add Morgan/ });
+  const highlighted = () =>
+    screen
+      .getByRole("region", { name: "Not in this channel" })
+      .querySelector("[data-highlighted]");
+  expect(highlighted()).toContainElement(morgan);
+  t.readAgentLibrary.mockResolvedValue({
+    definitions: [],
+    identities: [agent],
+  });
+  await act(async () => {
+    await t.session.agentChoices.refresh();
+  });
+  const rows = within(
+    screen.getByRole("region", { name: "Not in this channel" }),
+  ).getAllByRole("button", { name: /^Add / });
+  expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
+    expect.stringMatching(/^Add Mor \(/),
+    expect.stringMatching(/^Add Morgan \(/),
+  ]);
+  expect(highlighted()).toContainElement(morgan);
+  await t.user.keyboard("{ArrowUp}");
+  expect(highlighted()).toContainElement(rows[0] ?? null);
+  expect(t.publish).not.toHaveBeenCalled();
 });
 it("shows the real rejection and retries without discarding the query", async () => {
   const t = await setup();
@@ -460,15 +521,15 @@ it("refresh restarts the current directory query from page one instead of mixing
   expect(more).toHaveAttribute("data-size", "sm");
   expect(more.parentElement).toHaveClass("flex", "justify-center");
   await t.user.click(more);
-  await screen.findByText("Morgan stale");
+  await screen.findByText(nameText("Morgan stale"));
   const refresh = screen.getByRole("button", { name: "Refresh member data" });
   await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
   fresh = true;
   t.query.mockClear();
   await t.user.click(refresh);
-  await screen.findByText("Morgan 0");
+  await screen.findByText(nameText("Morgan 0"));
   await vi.waitFor(() => expect(refresh).toHaveAttribute("aria-busy", "false"));
-  expect(screen.queryByText("Morgan stale")).not.toBeInTheDocument();
+  expect(screen.queryByText(nameText("Morgan stale"))).not.toBeInTheDocument();
   expect(
     t.query.mock.calls
       .flatMap(([filters]) => filters)

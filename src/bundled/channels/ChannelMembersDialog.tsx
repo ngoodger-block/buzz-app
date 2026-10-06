@@ -4,8 +4,10 @@ import { Button as BaseButton } from "@base-ui/react/button";
 import referenceStyles from "../../shared/InlineReference.module.css";
 import { npubEncode } from "nostr-tools/nip19";
 import {
+  createContext,
   memo,
   useCallback,
+  useContext,
   useEffect,
   useId,
   useLayoutEffect,
@@ -13,6 +15,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type PointerEvent,
 } from "react";
 import type { RelaySession } from "../../features/relay/session";
 import type { AgentControl } from "../../features/agents/control";
@@ -20,6 +23,9 @@ import { useAgentChoices } from "../../features/agents/use-choices";
 import { useIdentityNames } from "../../features/identity-names/react";
 import { usePresenceStatus } from "../../features/presence/react";
 import { profileTarget } from "../../features/profiles/target";
+import { matchName } from "../../features/search/match";
+import { MatchedLabel } from "../../features/search/MatchedLabel";
+import { useSearchHighlight } from "../../features/search/use-search-highlight";
 import styles from "./ChannelMembersDialog.module.css";
 import { MEMBER_SEARCH_PAGE_SIZE } from "../../features/channel-members/search";
 import {
@@ -47,6 +53,28 @@ import {
 import { MemberRow, useMemberAdministration } from "./MemberAdministration";
 import { useMemberSearch } from "./useMemberSearch";
 import { useMemberOwners } from "./useMemberOwners";
+
+/** How a name matches typed text. People come from a relay prefix search, so
+ * fuzzy matches would depend on which profiles happen to be loaded; only real
+ * substrings count. */
+const typedMatch = (name: string, needle: string) => {
+  const match = needle ? matchName(name, needle) : undefined;
+  return match && match.rank <= 3 ? match : undefined;
+};
+
+/** Typed text, lowercased. A context, so a query change redraws only the
+ * names and not every memoized row. */
+const TypedText = createContext("");
+
+function MemberName({ name }: { name: string }) {
+  const needle = useContext(TypedText);
+  return (
+    <MatchedLabel
+      label={name}
+      positions={typedMatch(name, needle)?.positions}
+    />
+  );
+}
 
 /** Mounted rows share the same bounded presence owner as message bylines. */
 function MemberAvatar({
@@ -112,6 +140,9 @@ const MemberIdentityRow = memo(function MemberIdentityRow({
   add,
   busy,
   addDisabled,
+  highlightId,
+  highlighted,
+  onHighlightMove,
 }: {
   session: RelaySession;
   channelId: string;
@@ -144,6 +175,10 @@ const MemberIdentityRow = memo(function MemberIdentityRow({
   add(key: string): Promise<void>;
   busy: boolean;
   addDisabled: boolean;
+  /** Set on rows the search highlight can choose. */
+  highlightId?: string | undefined;
+  highlighted?: boolean | undefined;
+  onHighlightMove?: ((key: string, event: PointerEvent) => void) | undefined;
 }) {
   const npub = npubEncode(pubkey);
 
@@ -185,7 +220,7 @@ const MemberIdentityRow = memo(function MemberIdentityRow({
           <span className={styles.identity}>
             <span className={styles.identityName}>
               <span className={`${styles.name} text-body-sm`}>
-                {name}
+                {adding ? <MemberName name={name} /> : name}
                 {pubkey === session.viewer ? " (you)" : ""}
               </span>
             </span>
@@ -249,6 +284,15 @@ const MemberIdentityRow = memo(function MemberIdentityRow({
         onSendMessage ? () => void onSendMessage(pubkey) : undefined
       }
       messagePending={messagePending}
+      highlight={
+        highlightId && onHighlightMove
+          ? {
+              id: highlightId,
+              active: !!highlighted,
+              onPointerMove: (event) => onHighlightMove(pubkey, event),
+            }
+          : undefined
+      }
       invitationAction={
         adding ? (
           <span className={styles.addAction}>
@@ -625,11 +669,18 @@ export function ChannelMembersDialog({
           isAgent: true,
         });
     }
-  const available = [...candidates.values()].filter(
-    (person) =>
-      !members.has(person.pubkey) &&
-      !archiveHides(session.archives, person.pubkey, session.viewer),
-  );
+  const needle = text.toLowerCase();
+  // The relay ranks each page exact, then prefix, then other. Rank merged
+  // agents the same way; the stable sort keeps the relay's order within a rank.
+  const candidateRank = (person: { pubkey: string; name: string }) =>
+    typedMatch(label(person.pubkey, person.name), needle)?.rank ?? 4;
+  const available = [...candidates.values()]
+    .filter(
+      (person) =>
+        !members.has(person.pubkey) &&
+        !archiveHides(session.archives, person.pubkey, session.viewer),
+    )
+    .sort((a, b) => candidateRank(a) - candidateRank(b));
   // Known agents supplement the server page, not its rendering bound. Keep all
   // matches reachable through the existing More action without mounting them all.
   const invitationSize =
@@ -639,6 +690,7 @@ export function ChannelMembersDialog({
   const visibleCandidates =
     roleFilter === "All" ? available.slice(0, invitationSize) : [];
   const moreCandidates = available.length > invitationSize;
+  const offering = !initialLoading && canAdd && roleFilter === "All" && !!text;
   // Keep roster ownership observed while filtering; retiring the view clears
   // valid hints and forces every retained agent row through recovery renders.
   const agentKeys = [
@@ -742,6 +794,27 @@ export function ChannelMembersDialog({
       }
     },
     [session, channelId, control],
+  );
+
+  // Typed text highlights the first person not in the channel, so Enter adds
+  // them. Rows keep their own buttons; the highlight only marks one of them.
+  const highlight = useSearchHighlight({
+    query,
+    keys: offering ? visibleCandidates.map((person) => person.pubkey) : [],
+    onChoose: (key) => {
+      if (!busy.has(key) && !rosterBusy && !rosterError) void add(key);
+    },
+  });
+  const latestHighlight = useRef(highlight);
+  latestHighlight.current = highlight;
+  // Stable, so a highlight move does not rebuild every memoized row.
+  const moveHighlight = useCallback(
+    (key: string, event: PointerEvent) =>
+      latestHighlight.current.rowProps(key).onPointerMove(event),
+    [],
+  );
+  const highlightedPerson = visibleCandidates.find(
+    (person) => person.pubkey === highlight.active,
   );
 
   const searchAgents = search.people
@@ -886,6 +959,9 @@ export function ChannelMembersDialog({
         add={add}
         busy={busy.has(key)}
         addDisabled={rosterBusy || !!rosterError}
+        highlightId={adding ? highlight.rowId(key) : undefined}
+        highlighted={adding && highlight.active === key}
+        onHighlightMove={adding ? moveHighlight : undefined}
       />
     );
   };
@@ -894,7 +970,7 @@ export function ChannelMembersDialog({
     (known.has(selection.pubkey) || profiles.get(selection.pubkey)?.isAgent);
   const removalTarget = selectedAgent ? "agent" : "member";
   const selectedPicture = selection && profiles.get(selection.pubkey)?.picture;
-  return (
+  const dialog = (
     <Dialog
       open
       dismissOnOutsideClick
@@ -1031,8 +1107,16 @@ export function ChannelMembersDialog({
                   setQuery(value);
                   if (value.length > 0) setSelectedRole("All");
                 }}
+                onKeyDown={(event) => {
+                  highlight.keyDown(event);
+                }}
                 maxLength={256}
               />
+              <span className="sr-only" role="status">
+                {highlightedPerson
+                  ? `${label(highlightedPerson.pubkey, highlightedPerson.name)}. Press Enter to add.`
+                  : ""}
+              </span>
             </div>
             {!initialLoading && presentGroups.length > 1 && (
               <motion.div
@@ -1155,6 +1239,7 @@ export function ChannelMembersDialog({
                 <section
                   className={styles.memberGroup}
                   aria-label="Not in this channel"
+                  {...highlight.listProps}
                 >
                   <h3
                     className={`${styles.groupHeading} px-control-inset pb-2 text-caption text-subtle`}
@@ -1265,4 +1350,5 @@ export function ChannelMembersDialog({
       )}
     </Dialog>
   );
+  return <TypedText.Provider value={needle}>{dialog}</TypedText.Provider>;
 }

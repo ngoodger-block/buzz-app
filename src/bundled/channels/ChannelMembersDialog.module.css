@@ -53,7 +53,7 @@
   min-height: var(--size-row);
   border-radius: var(--radius-row);
 }
-.member:is(:hover, :focus-within, [data-menu-open]) {
+.member:is(:hover, :focus-within, [data-menu-open], [data-highlighted]) {
   background: var(--affordance-subtle);
 }
 .addAction {

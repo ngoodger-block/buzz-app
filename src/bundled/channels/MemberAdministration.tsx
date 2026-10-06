@@ -84,6 +84,7 @@ export function MemberRow({
   onSendMessage,
   messagePending,
   invitationAction,
+  highlight,
   children,
 }: {
   session: RelaySession;
@@ -99,6 +100,14 @@ export function MemberRow({
   onSendMessage?: (() => void) | undefined;
   messagePending?: boolean | undefined;
   invitationAction?: ReactNode;
+  /** The search highlight, for rows a picker can choose with Enter. */
+  highlight?:
+    | {
+        id: string;
+        active: boolean;
+        onPointerMove(event: React.PointerEvent): void;
+      }
+    | undefined;
   children: ReactNode;
 }) {
   const reveal = useMemberReveal();
@@ -214,6 +223,9 @@ export function MemberRow({
           )
         }
         className={styles.member}
+        id={highlight?.id}
+        data-highlighted={highlight?.active || undefined}
+        onPointerMove={highlight?.onPointerMove}
         data-menu-open={menuOpen || undefined}
         onContextMenu={(event) => {
           setMenuAnchor(undefined);
