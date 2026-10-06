@@ -144,7 +144,9 @@ export function MentionPicker({
       (choice) => personKey(choice.recipient.pubkey) === highlight.active,
     )?.label ??
     teams.choices.find((team) => teamKey(team.id) === highlight.active)?.name;
-  // Mentions match names at word starts, so underline only those matches.
+  // Mentions rank names by word starts, so underline only word-start
+  // matches. matchName also splits words at punctuation, rankMentions only
+  // at spaces; the underline can mark a little more than the rank used.
   const needle = search.trim().toLowerCase();
   const matched = (label: string) => {
     const match = needle ? matchName(label, needle) : undefined;
@@ -211,6 +213,7 @@ export function MentionPicker({
               value={search}
               onValueChange={setSearch}
               disabled={disabled}
+              aria-controls={highlight.listId}
               {...highlight.fieldProps}
               onKeyDown={(event) => {
                 if (event.key === "Enter") event.preventDefault();
@@ -287,6 +290,7 @@ export function MentionPicker({
             )}
             <div
               className={`${styles.mentionChoices} buzz-thin-scrollbar`}
+              id={highlight.listId}
               {...highlight.listProps}
             >
               {candidates.map(

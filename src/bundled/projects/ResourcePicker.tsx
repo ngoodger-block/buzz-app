@@ -158,9 +158,11 @@ export function ResourcePicker({
           )
           .map((item) => {
             const match = matchName(item.label, query);
-            return { item, match, later: !match || match.rank > 2 ? 1 : 0 };
+            // Rank 2 or better: the whole title, its start or a word start.
+            const group = match && match.rank <= 2 ? 0 : 1;
+            return { item, match, group };
           })
-          .sort((a, b) => a.later - b.later)
+          .sort((a, b) => a.group - b.group)
       : [];
   const busy = !!checking && !checking.failed;
   const highlight = useSearchHighlight({
@@ -302,6 +304,7 @@ export function ResourcePicker({
                   value={search}
                   onValueChange={setSearch}
                   disabled={disabled}
+                  aria-controls={highlight.listId}
                   {...highlight.fieldProps}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") event.preventDefault();
@@ -342,6 +345,7 @@ export function ResourcePicker({
                 )}
                 <div
                   className={`${styles.choices} buzz-thin-scrollbar`}
+                  id={highlight.listId}
                   {...highlight.listProps}
                 >
                   {shown.map(({ item, match }) => (

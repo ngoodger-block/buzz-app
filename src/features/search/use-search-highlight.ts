@@ -106,6 +106,17 @@ export function useSearchHighlight({
     /** Spread on each row. */
     rowProps: (key: string) => ({
       id: rowId(key),
+      // Tab can focus a row. Enter then chooses that row, so highlight it
+      // and announce it. The row is already in view, so do not scroll.
+      onFocus() {
+        if (active !== key)
+          setSelection((previous) => ({
+            ...previous,
+            query,
+            key,
+            pointer: true,
+          }));
+      },
       onPointerMove(event: PointerEvent) {
         if (
           event.pointerType !== "touch" &&

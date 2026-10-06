@@ -4604,6 +4604,40 @@ describe("project resource picker", () => {
     expect(choice).toHaveTextContent("Checking…");
   });
 
+  it("highlights and announces the row that Tab focuses", async () => {
+    const p = picker(undefined, [
+      item,
+      {
+        ...item,
+        id: "b".repeat(64),
+        created_at: 1,
+        content: "Login page",
+        tags: [
+          ["a", repository.address],
+          ["subject", "Login page"],
+        ],
+      },
+    ]);
+    await p.open();
+    const second = await screen.findByRole("button", { name: /^Login page,/ });
+    const search = screen.getByRole("searchbox");
+    const list = document.getElementById(
+      search.getAttribute("aria-controls") ?? "",
+    );
+    expect(list).toContainElement(second);
+    for (let i = 0; i < 10 && document.activeElement !== second; i += 1)
+      await p.h.user.tab();
+    expect(second).toHaveFocus();
+    expect(second).toHaveAttribute("data-selected");
+    expect(screen.getByRole("button", { name: row })).not.toHaveAttribute(
+      "data-selected",
+    );
+    expect(search).toHaveAttribute("aria-activedescendant", second.id);
+    expect(
+      screen.getByText("Login page. Press Enter to add.", { exact: true }),
+    ).toBeInTheDocument();
+  });
+
   it("keeps focus in the popover while a clicked row is checked", async () => {
     const p = picker();
     await p.open();
