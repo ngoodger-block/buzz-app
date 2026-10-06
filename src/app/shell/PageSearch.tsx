@@ -25,14 +25,14 @@ import {
   pagePresentation,
   shellPresentation,
 } from "./presentation";
+import { matchName } from "../../features/search/match";
 import {
-  matchName,
   SearchChoices,
   type SearchInputProps,
   type SearchDestination,
 } from "./SearchChoices";
 import { SearchResults } from "./SearchResults";
-import { usageScope } from "./search-usage";
+import { usageScope } from "../../features/search/usage";
 
 export type SearchServices = Pick<
   AppServices,

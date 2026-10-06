@@ -1,10 +1,7 @@
-import { relayOrigin } from "../../features/communities/destination";
-import type { Navigation } from "../../features/navigation/controller";
-import { relayPartition } from "../../features/relay/partition";
-import type {
-  NavigationScope,
-  OpenTarget,
-} from "../../features/navigation/targets";
+import { relayOrigin } from "../communities/destination";
+import type { Navigation } from "../navigation/controller";
+import { relayPartition } from "../relay/partition";
+import type { NavigationScope, OpenTarget } from "../navigation/targets";
 import { readView, writeView } from "../../shared/view-state";
 
 /** What this device remembers about where a viewer goes in one community, so
@@ -91,8 +88,15 @@ export function recordVisit(scope: string, key: string, now = Date.now()) {
   writeView(scope, KEY, stored);
 }
 
-/** Remembers that typed text led to `key`. A search choice counts more than
- * an ordinary open; the open that follows adds its own visit. */
+/** Typed text in a picker other than Command-K. Each picker keeps its own
+ * earlier choices, so a choice in one cannot replace another's for the same
+ * text. The prefix cannot be typed, so Command-K text never matches it. */
+export const pickerText = (picker: string, typed: string) =>
+  typed ? `\u0000${picker}\u0000${typed}` : "";
+
+/** Remembers that typed text led to `key`, replacing the earlier choice for
+ * that text. A search choice counts more than an ordinary open; the open that
+ * follows adds its own visit. */
 export function recordChoice(
   scope: string,
   typed: string,
@@ -110,8 +114,9 @@ export function recordChoice(
 }
 
 export type SearchUsage = {
-  /** How far usage lifts a match's rank, from 0 up to MAX_BOOST. */
-  boost(key: string): number;
+  /** How far usage lifts a match's rank, from 0 up to MAX_BOOST. Several
+   * keys for one row, such as a person and their DM, share one score. */
+  boost(...keys: string[]): number;
   /** The destination last chosen for this typed text, a longer text that
    * starts with it, or a shorter text it starts with, among `candidates`. */
   pick(typed: string, candidates: ReadonlySet<string>): string | undefined;
@@ -129,8 +134,8 @@ export function readSearchUsage(scope: string, now = Date.now()): SearchUsage {
   );
   return {
     // Half the maximum at four visits' worth of score.
-    boost: (key) => {
-      const score = scores.get(key) ?? 0;
+    boost: (...keys) => {
+      const score = keys.reduce((sum, key) => sum + (scores.get(key) ?? 0), 0);
       return (MAX_BOOST * score) / (score + 4);
     },
     pick(typed, candidates) {

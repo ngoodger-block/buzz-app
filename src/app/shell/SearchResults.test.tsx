@@ -26,7 +26,11 @@ import {
 } from "../../features/relay/testing";
 import type { LiveCallbacks } from "../../features/relay/live";
 import { SearchResults } from "./SearchResults";
-import { readSearchUsage, recordChoice, recordVisit } from "./search-usage";
+import {
+  readSearchUsage,
+  recordChoice,
+  recordVisit,
+} from "../../features/search/usage";
 import { ChatCircleIcon } from "../../shared/design-system/icons/index";
 
 // jsdom lacks scrollIntoView; the palette reveals its typed-text selection.

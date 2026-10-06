@@ -15,8 +15,13 @@ import {
 } from "../../shared/design-system/icons/index";
 import { Button } from "../../shared/design-system/ui/Button";
 import type { SearchDestination, SearchInputProps } from "./SearchChoices";
-import { matchName, matchRank, SearchChoices } from "./SearchChoices";
-import { noSearchUsage, readSearchUsage, recordChoice } from "./search-usage";
+import { SearchChoices } from "./SearchChoices";
+import { matchName, matchRank } from "../../features/search/match";
+import {
+  noSearchUsage,
+  readSearchUsage,
+  recordChoice,
+} from "../../features/search/usage";
 import { usePublicChannelSearch } from "./usePublicChannelSearch";
 import { useSearchMessages } from "./useSearchMessages";
 import {

@@ -13,7 +13,7 @@ import { HostService } from "../features/host/service";
 import { bindUnreadIndicator } from "../features/notifications/indicator-unread";
 import { provideNavigation } from "../features/navigation/service";
 import { bindDeepLinks } from "../features/navigation/deep-links";
-import { bindSearchUsage } from "./shell/search-usage";
+import { bindSearchUsage } from "../features/search/usage";
 import { communityDestination } from "../features/communities/destination";
 import { NotificationsService } from "../features/notifications/service";
 import {

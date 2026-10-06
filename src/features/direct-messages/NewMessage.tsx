@@ -363,6 +363,7 @@ export function NewMessage({
     <section className={styles.page} aria-label="New message">
       <RecipientPicker
         session={session}
+        scope={scope}
         selected={recipients}
         disabled={locked}
         onChange={change}

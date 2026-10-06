@@ -421,7 +421,17 @@ test("empty compose, keyboard selection, pagination, removal effects, retry, the
       16;
     return list.scrollTop;
   });
-  await partial.dispatchEvent("pointermove", { pointerType: "mouse" });
+  // Only a real pointer move highlights a row, so move between two points.
+  await partial.dispatchEvent("pointermove", {
+    pointerType: "mouse",
+    clientX: 20,
+    clientY: 20,
+  });
+  await partial.dispatchEvent("pointermove", {
+    pointerType: "mouse",
+    clientX: 21,
+    clientY: 20,
+  });
   await expect(partial).toHaveAttribute("aria-selected", "true");
   await expect
     .poll(() => picker.evaluate((element) => element.scrollTop))

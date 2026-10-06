@@ -1,18 +1,19 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it } from "vitest";
-import { createNavigationController } from "../../features/navigation/controller";
-import { createMemoryHistory } from "../../features/navigation/history";
-import type { OpenTarget } from "../../features/navigation/targets";
+import { createNavigationController } from "../navigation/controller";
+import { createMemoryHistory } from "../navigation/history";
+import type { OpenTarget } from "../navigation/targets";
 import { clearViewScope, writeView } from "../../shared/view-state";
 import {
   bindSearchUsage,
   HALF_LIFE_MS,
   MAX_BOOST,
+  pickerText,
   readSearchUsage,
   recordChoice,
   recordVisit,
   usageScope,
-} from "./search-usage";
+} from "./usage";
 
 const viewer = "a".repeat(64);
 const scope = usageScope({
@@ -59,6 +60,35 @@ it("remembers the choice for typed text, its prefixes and its extensions", () =>
   expect(usage.boost("channel:workflows")).toBeGreaterThan(
     readSearchUsage(scope, now).boost("channel:opened"),
   );
+});
+
+it("replaces the earlier choice for the same text, and keeps pickers apart", () => {
+  recordChoice(scope, "wo", "channel:workflows", now - 3);
+  recordChoice(scope, "wo", "channel:work", now - 2);
+  // The replaced choice does not come back while its successor is missing.
+  const usage = readSearchUsage(scope, now);
+  expect(usage.pick("wo", new Set(["channel:workflows"]))).toBeUndefined();
+  expect(usage.pick("wo", new Set(["channel:work"]))).toBe("channel:work");
+  // A picker's text is its own: it neither replaces nor matches Command-K's.
+  recordChoice(scope, pickerText("dm", "wo"), "person:woody", now - 1);
+  const later = readSearchUsage(scope, now);
+  expect(later.pick("wo", new Set(["channel:work"]))).toBe("channel:work");
+  expect(later.pick("w", new Set(["person:woody"]))).toBeUndefined();
+  expect(later.pick(pickerText("dm", "w"), new Set(["person:woody"]))).toBe(
+    "person:woody",
+  );
+  expect(pickerText("dm", "")).toBe("");
+});
+
+it("scores a row by the sum of its keys", () => {
+  recordVisit(scope, "channel:dm", now);
+  recordChoice(scope, "", "person:logan", now);
+  const usage = readSearchUsage(scope, now);
+  expect(usage.boost("person:logan", "channel:dm")).toBeGreaterThan(
+    usage.boost("person:logan"),
+  );
+  expect(usage.boost("person:logan", "channel:dm")).toBeLessThan(MAX_BOOST);
+  expect(usage.boost()).toBe(0);
 });
 
 it("keeps each community apart, bounds its size and ignores malformed data", () => {
