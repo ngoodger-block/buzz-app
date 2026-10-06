@@ -1728,3 +1728,77 @@ it("contains a broken plugin message action to its own contribution", () => {
     cleanup();
   }
 });
+
+it("contains a throwing plugin action icon and opened component", async () => {
+  const broken = () => {
+    throw new Error("broken contribution");
+  };
+  const entry = (
+    id: string,
+    icon: () => React.ReactNode,
+    component: () => React.ReactNode,
+  ) => ({
+    id,
+    title: id,
+    key: `test.plugin/${id}`,
+    pluginId: "test.plugin",
+    revision: "one",
+    matches: () => true,
+    icon,
+    component,
+  });
+  const actions = [
+    entry("Broken icon", broken, () => null),
+    entry("Broken component", () => <span>ok icon</span>, broken),
+  ];
+  const none: never[] = [];
+  const empty = { snapshot: () => none, subscribe: () => () => {} };
+  const channelList = { channels: [], status: "ready" };
+  const session = {
+    viewer: "viewer",
+    presence: {
+      subscribe: () => () => {},
+      status: () => "unknown",
+      limited: () => false,
+    },
+    unread: {
+      subscribe: () => () => {},
+      subscribeSync: () => () => {},
+      snapshot: () => undefined,
+      following: () => false,
+    },
+    messages: { report: undefined },
+    channels: { subscribeList: () => () => {}, list: () => channelList },
+  } as unknown as RelaySession;
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    renderDom(
+      <MessageRow
+        row={{ ...row, replyCount: 0 }}
+        session={session}
+        profile={undefined}
+        media={() => undefined}
+        onOpenLink={() => false}
+        day={false}
+        retry={undefined}
+        extensions={{
+          tools: empty,
+          inline: empty,
+          actions: { snapshot: () => actions, subscribe: () => () => {} },
+        }}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "More message actions" }),
+    );
+    expect(
+      await screen.findByRole("menuitem", { name: "Broken icon" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Broken component/ }));
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(screen.getByText("Root")).toBeInTheDocument();
+  } finally {
+    error.mockRestore();
+    cleanup();
+  }
+});
