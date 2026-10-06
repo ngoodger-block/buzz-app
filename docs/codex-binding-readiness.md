@@ -88,9 +88,10 @@ The globally installed `@zed-industries/codex-acp` 0.16.0 was also inspected. It
 embeds an older Codex engine and does not implement the required version
 identity, so readiness rejects it. The supported adapter's empty ACP MCP list
 does not disable MCP servers from Codex configuration, and the currently pinned
-Buzz pool may continue after model or effort rejection. Those are explicit
-prerequisites for the validation and execution layer and must be resolved before
-Codex creation is enabled.
+Buzz pool may continue after model or effort rejection. The revised
+[compatibility decisions](codex-validation-prerequisites.md) accept both
+behaviors. Validation and execution still need their own implementation and
+acceptance before Codex creation is enabled.
 
 ## Verification
 

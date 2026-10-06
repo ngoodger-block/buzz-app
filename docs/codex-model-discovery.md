@@ -3,8 +3,7 @@
 Codex remains unavailable for agent creation. This layer adds headless model and
 effort discovery for the exact native Codex binding established by
 [Codex binding readiness](codex-binding-readiness.md). It does not persist a
-selection, create an identity, send a prompt, or establish that inference can be
-performed without tools.
+selection, create an identity, send a prompt, or establish successful inference.
 
 ## Request and context contract
 
@@ -111,7 +110,8 @@ the controlled tests are also intended for Linux CI. Windows, packaged-app
 discovery, and a visible GUI flow have not been exercised. Codex creation and
 persistence remain disabled.
 
-The next layer cannot satisfy its inference contract with the tested tools. See
-[Codex validation prerequisites](codex-validation-prerequisites.md) for the
-required deny-all tool capability. Existing runtime fallback behavior is preserved
-and is no longer an enablement prerequisite.
+The next layer can proceed under the revised
+[Codex validation compatibility decisions](codex-validation-prerequisites.md).
+Validation uses ordinary Codex capabilities and preserves existing runtime
+fallback behavior. PR 4 still requires real inference and lifecycle acceptance;
+this discovery layer does not establish either.
