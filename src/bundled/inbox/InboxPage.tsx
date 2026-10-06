@@ -559,11 +559,11 @@ export function InboxView({
                     { archived: false, label: "Inbox" },
                     { archived: true, label: "Archived" },
                   ].map(({ archived: value, label }) => (
-                    <Button
+                    <NavigationItem
                       key={label}
-                      size="sm"
-                      variant={archivedView === value ? "inverted" : "ghost"}
-                      aria-pressed={archivedView === value}
+                      label={label}
+                      variant="pill"
+                      selected={archivedView === value}
                       onClick={() => {
                         if (archivedView === value) return;
                         cancelRetry();
@@ -571,9 +571,7 @@ export function InboxView({
                         setArchivedView(value);
                         setLimit(50);
                       }}
-                    >
-                      {label}
-                    </Button>
+                    />
                   ))}
                 </fieldset>
                 <Button

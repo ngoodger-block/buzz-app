@@ -164,8 +164,9 @@
   background: var(--surface-inset);
 }
 
-.scopeSwitch button[aria-pressed="true"] {
-  background: var(--surface-panel);
+.scopeSwitch .navigation-item {
+  font-size: var(--text-label-sm);
+  min-height: var(--size-control-sm);
 }
 
 .scroll {

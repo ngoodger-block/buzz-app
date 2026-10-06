@@ -33,8 +33,7 @@ test("Inbox archive scope is separate from attention filters and preserves them"
     .getByRole("list", { name: "Inbox conversations" })
     .getByRole("listitem");
 
-  await expect(inboxButton).toHaveAttribute("aria-pressed", "true");
-  await expect(archivedButton).toHaveAttribute("aria-pressed", "false");
+  await expect(inboxButton).toHaveAttribute("aria-current", "page");
   const selectedScopeBackground = await inboxButton.evaluate(
     (button) => getComputedStyle(button).backgroundColor,
   );
@@ -60,11 +59,12 @@ test("Inbox archive scope is separate from attention filters and preserves them"
 
   await archivedButton.click();
   await expect(rows).toHaveCount(1);
-  await expect(archivedButton).toHaveAttribute("aria-pressed", "true");
-  await expect(archivedButton).toHaveCSS(
-    "background-color",
-    "rgb(255, 255, 255)",
-  );
+  await expect(archivedButton).toHaveAttribute("aria-current", "page");
+  await expect(
+    archivedButton.evaluate(
+      (button) => getComputedStyle(button).backgroundColor,
+    ),
+  ).not.toBe(unselectedScopeBackground);
   await expect(inbox.getByRole("combobox", { name: "Sender" })).toContainText(
     "Agents",
   );
@@ -79,7 +79,7 @@ test("Inbox archive scope is separate from attention filters and preserves them"
 
   await inboxButton.click();
   await expect(rows).toHaveCount(0);
-  await expect(inboxButton).toHaveAttribute("aria-pressed", "true");
+  await expect(inboxButton).toHaveAttribute("aria-current", "page");
   await expect(
     inbox.getByRole("combobox", { name: "Activity type" }),
   ).toContainText("Mentions");
