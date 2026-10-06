@@ -53,8 +53,12 @@
   min-height: var(--size-row);
   border-radius: var(--radius-row);
 }
-.member:is(:hover, :focus-within, [data-menu-open], [data-highlighted]) {
+.member:is(:hover, :focus-within, [data-menu-open]) {
   background: var(--affordance-subtle);
+}
+/* Enter adds this person, so mark the row like a highlighted picker row. */
+.member[data-highlighted] {
+  background: var(--affordance-selected);
 }
 .addAction {
   flex-shrink: 0;
