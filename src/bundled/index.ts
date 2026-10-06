@@ -30,6 +30,8 @@ import bestieManifest from "./bestie/manifest.json";
 import * as bestie from "./bestie";
 import inboxManifest from "./inbox/manifest.json";
 import * as inbox from "./inbox";
+import remindersManifest from "./reminders/manifest.json";
+import * as reminders from "./reminders";
 import projectsManifest from "./projects/manifest.json";
 import * as projects from "./projects";
 import workflowsManifest from "./workflows/manifest.json";
@@ -123,6 +125,11 @@ export const bundledPlugins: readonly BundledPlugin[] = [
   {
     manifest: { ...inboxManifest, apiVersion: 1 },
     module: inbox,
+    enabledByDefault: true,
+  },
+  {
+    manifest: { ...remindersManifest, apiVersion: 1 },
+    module: reminders,
     enabledByDefault: true,
   },
   {
