@@ -607,6 +607,13 @@ export function subscribeRelayTraffic(
                 since: route.since,
                 limit: LIVE_REPLAY_LIMIT,
               },
+              // Edits from another device; history and due times come from the reader.
+              {
+                kinds: [30300],
+                authors: [viewer],
+                since: route.since,
+                limit: LIVE_REPLAY_LIMIT,
+              },
             ]
           : []),
         ...(route.id === "profiles"

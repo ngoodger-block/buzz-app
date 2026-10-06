@@ -661,6 +661,27 @@ export async function connectNativeTransport(
       return { repository, token };
     },
     ...nativeSidebar(transport),
+    reminders: {
+      async decode(events, signal) {
+        signal.throwIfAborted();
+        const decoded = await invoke<{ eventId: string; content: unknown }[]>(
+          "relay_decode_reminders",
+          { events },
+        );
+        signal.throwIfAborted();
+        return decoded;
+      },
+      async sign(intent, signal) {
+        signal.throwIfAborted();
+        const event = eventDto(
+          await invoke<unknown>("relay_sign_reminder", { intent }),
+        );
+        signal.throwIfAborted();
+        if (event.pubkey !== transport.viewer || event.kind !== 30300)
+          throw new Error("Invalid reminder event");
+        return event;
+      },
+    },
     readState: {
       ...(readCommunity ? { communityId: readCommunity } : {}),
       async decode(events: readonly RelayEvent[], signal: AbortSignal) {

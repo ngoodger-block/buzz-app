@@ -1,3 +1,4 @@
+import type { ReminderHost } from "./reminders";
 import { archiveClient } from "../archive/client";
 import type { ArchiveHost } from "../archive/types";
 import {
@@ -110,6 +111,8 @@ export interface ReadTransport {
   readonly decodeSidebarPreferences?: SidebarDecoder;
   readonly writeSidebarSort?: SidebarSortMutator;
   readonly readState?: ReadStateHost;
+  /** Purpose-bound NIP-ER codec; never a general NIP-44 or signing primitive. */
+  readonly reminders?: ReminderHost;
   readonly channelKit?: ChannelKitHost;
   /** Strictly validated atomic writer snapshot; never an ordinary event-array query. */
   readStateSnapshot?(
