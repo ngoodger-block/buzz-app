@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MentionCompletion } from "./MentionCompletion";
 import { MentionPicker } from "./MentionPicker";
 import { mentionQuery } from "./mention-query";
@@ -18,9 +18,17 @@ import type { ComposerInputElement } from "../../features/messages/composer-dom"
 import type { RelaySession } from "../../features/relay/session";
 import type { Contribution } from "../../plugins/contributions";
 
+// jsdom lacks scrollIntoView; the search highlight keeps its row in view.
+beforeEach(() => {
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: vi.fn(),
+  });
+});
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
   vi.restoreAllMocks();
 });
 
@@ -187,8 +195,6 @@ it("late teams preserve the highlighted recipient and all 50 installed people", 
       disconnect() {}
     },
   );
-  const scrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = vi.fn();
   const h = fixture({ count: 50, loading: true });
   const replace = vi.fn(
     (_edit: CompletionResult["items"][number]["edit"]) => true,
@@ -262,8 +268,6 @@ it("late teams preserve the highlighted recipient and all 50 installed people", 
     view.unmount();
     input.remove();
     h.library.dispose();
-    if (scrollIntoView) HTMLElement.prototype.scrollIntoView = scrollIntoView;
-    else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
   }
 });
 

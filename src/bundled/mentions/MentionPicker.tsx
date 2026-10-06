@@ -15,6 +15,9 @@ import { useTeamMentions } from "./use-team-mentions";
 import { useMentionChoices } from "./use-mention-choices";
 import type { RelaySession } from "../../features/relay/session";
 import { outsideMentionDetail } from "../../features/messages/mention-candidates";
+import { matchName } from "../../features/search/match";
+import { MatchedLabel } from "../../features/search/MatchedLabel";
+import { useSearchHighlight } from "../../features/search/use-search-highlight";
 import "../../shared/design-system/styles/scrollbars.css";
 import styles from "./Mentions.module.css";
 
@@ -92,6 +95,61 @@ export function MentionPicker({
       current = false;
     };
   }, [session, open, memberKey, draftRoster]);
+  const chooseRecipient = (
+    recipient: (typeof candidates)[number]["recipient"],
+  ) => {
+    if (model.canSelect(recipient.pubkey) && select(recipient)) {
+      accepted.current = true;
+      setOpen(false);
+    }
+  };
+  const chooseTeam = (team: (typeof teams.choices)[number]) => {
+    if (team.canSelect() && selectTeam?.(team.recipients)) {
+      accepted.current = true;
+      setOpen(false);
+    }
+  };
+  const personKey = (pubkey: string) => `person:${pubkey}`;
+  const teamKey = (id: string) => `team:${id}`;
+  // Order stays rankMentions', shared with inline @ completion and mobile.
+  // The highlight skips rows that cannot be chosen, as the arrow keys did.
+  const highlight = useSearchHighlight({
+    query: search,
+    keys: disabled
+      ? []
+      : [
+          ...candidates
+            .filter((choice) => !choice.disabled)
+            .map((choice) => personKey(choice.recipient.pubkey)),
+          ...teams.choices
+            .filter((team) => !team.disabled)
+            .map((team) => teamKey(team.id)),
+        ],
+    onChoose: (key) => {
+      const person = candidates.find(
+        (choice) => personKey(choice.recipient.pubkey) === key,
+      );
+      if (person) return chooseRecipient(person.recipient);
+      const team = teams.choices.find((choice) => teamKey(choice.id) === key);
+      if (team) chooseTeam(team);
+    },
+    open: open && !disabled,
+    // Enter chose the first row before anything was typed; keep that, and
+    // show which row it is.
+    highlightEmpty: true,
+    wrap: true,
+  });
+  const highlightedLabel =
+    candidates.find(
+      (choice) => personKey(choice.recipient.pubkey) === highlight.active,
+    )?.label ??
+    teams.choices.find((team) => teamKey(team.id) === highlight.active)?.name;
+  // Mentions match names at word starts, so underline only those matches.
+  const needle = search.trim().toLowerCase();
+  const matched = (label: string) => {
+    const match = needle ? matchName(label, needle) : undefined;
+    return match && match.rank <= 2 ? match.positions : undefined;
+  };
   return (
     <PopoverRoot
       open={open && !disabled}
@@ -136,53 +194,6 @@ export function MentionPicker({
             overflow: "hidden",
             display: "flex",
           }}
-          onKeyDown={(event) => {
-            if (
-              event.nativeEvent.isComposing ||
-              event.nativeEvent.keyCode === 229
-            )
-              return;
-            const fromSearch = event.target === searchInput.current;
-            if (event.key === "Enter" && fromSearch) event.preventDefault();
-            if (
-              event.altKey ||
-              event.ctrlKey ||
-              event.metaKey ||
-              event.shiftKey
-            )
-              return;
-            if (!["ArrowDown", "ArrowUp", "Enter"].includes(event.key)) return;
-            const rows = Array.from(
-              event.currentTarget.querySelectorAll<HTMLButtonElement>(
-                "[data-mention-choice]:not(:disabled)",
-              ),
-            );
-            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-              if (
-                !fromSearch &&
-                !rows.includes(event.target as HTMLButtonElement)
-              )
-                return;
-              event.preventDefault();
-              event.stopPropagation();
-              const current = rows.indexOf(
-                document.activeElement as HTMLButtonElement,
-              );
-              const next =
-                current < 0
-                  ? event.key === "ArrowDown"
-                    ? 0
-                    : rows.length - 1
-                  : (current +
-                      (event.key === "ArrowDown" ? 1 : -1) +
-                      rows.length) %
-                    rows.length;
-              rows[next]?.focus();
-            } else if (event.key === "Enter" && fromSearch) {
-              event.stopPropagation();
-              rows[0]?.click();
-            }
-          }}
           aria-label="Mention a member or agent"
           finalFocus={!accepted.current}
         >
@@ -200,8 +211,13 @@ export function MentionPicker({
               value={search}
               onValueChange={setSearch}
               disabled={disabled}
+              {...highlight.fieldProps}
               onKeyDown={(event) => {
                 if (event.key === "Enter") event.preventDefault();
+                // Shift+Enter and Shift+arrows stay text keys, as before.
+                const handled = !event.shiftKey && highlight.keyDown(event);
+                // Keep these keys from the composer behind the popup.
+                if (handled || event.key === "Enter") event.stopPropagation();
               }}
             />
             {!draftRoster && inviteAgents && (
@@ -269,7 +285,10 @@ export function MentionPicker({
             {!draftRoster && (!inviteAgents || !!channel) && !members && (
               <p role="status">Channel membership unavailable.</p>
             )}
-            <div className={`${styles.mentionChoices} buzz-thin-scrollbar`}>
+            <div
+              className={`${styles.mentionChoices} buzz-thin-scrollbar`}
+              {...highlight.listProps}
+            >
               {candidates.map(
                 ({ recipient, label, agent, disabled: reason }) => (
                   <NavigationItem
@@ -277,20 +296,18 @@ export function MentionPicker({
                     data-mention-choice=""
                     type="button"
                     key={recipient.pubkey}
+                    {...highlight.rowProps(personKey(recipient.pubkey))}
+                    selected={highlight.active === personKey(recipient.pubkey)}
+                    aria-current={false}
                     aria-label={`${label} ${recipient.pubkey}`}
                     disabled={disabled || !!reason}
-                    onClick={() => {
-                      if (
-                        model.canSelect(recipient.pubkey) &&
-                        select(recipient)
-                      ) {
-                        accepted.current = true;
-                        setOpen(false);
-                      }
-                    }}
+                    onClick={() => chooseRecipient(recipient)}
                     label={
                       <span className="flex flex-col whitespace-normal">
-                        <span>{label}</span>
+                        <MatchedLabel
+                          label={label}
+                          positions={matched(label)}
+                        />
                         {reason && <small>{reason}</small>}
                         {!members?.includes(recipient.pubkey) && (
                           <small className="text-caption text-subtle">
@@ -334,8 +351,16 @@ export function MentionPicker({
                   variant="option"
                   data-mention-choice=""
                   type="button"
+                  {...highlight.rowProps(teamKey(team.id))}
+                  selected={highlight.active === teamKey(team.id)}
+                  aria-current={false}
                   disabled={disabled || !!team.disabled}
-                  label={team.name}
+                  label={
+                    <MatchedLabel
+                      label={team.name}
+                      positions={matched(team.name)}
+                    />
+                  }
                   icon={
                     <TeamMentionAvatars
                       session={session}
@@ -348,12 +373,7 @@ export function MentionPicker({
                     </span>
                   }
                   aria-label={`${team.name} · ${team.detail}`}
-                  onClick={() => {
-                    if (team.canSelect() && selectTeam?.(team.recipients)) {
-                      accepted.current = true;
-                      setOpen(false);
-                    }
-                  }}
+                  onClick={() => chooseTeam(team)}
                 />
               ))}
               {model.truncated && (
@@ -362,6 +382,11 @@ export function MentionPicker({
               {members && !candidates.length && !teams.choices.length && (
                 <p>No matching channel members.</p>
               )}
+              <p role="status" className="sr-only">
+                {highlightedLabel
+                  ? `${highlightedLabel}. Press Enter to mention.`
+                  : ""}
+              </p>
             </div>
           </div>
         </PopoverPopup>

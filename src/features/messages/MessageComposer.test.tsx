@@ -4463,6 +4463,7 @@ describe("project resource picker", () => {
   function picker(
     home: () => Promise<unknown> = () =>
       Promise.resolve({ status: "home", project }),
+    issues: readonly (typeof item)[] = [item],
   ) {
     const h = mount({ extensions: undefined });
     let release: (() => void) | undefined;
@@ -4472,7 +4473,7 @@ describe("project resource picker", () => {
       (route: { type: string; tab?: string }, signal: AbortSignal) => {
         if (route.type === "project")
           return Promise.resolve({
-            items: route.tab === "prs" ? [] : [item],
+            items: route.tab === "prs" ? [] : issues,
             repositories: [repository],
             truncated: route.tab === "prs",
           });
@@ -4543,10 +4544,12 @@ describe("project resource picker", () => {
       fireEvent.keyDown(search, { key: "Enter", ...composition });
       expect(p.validations).toHaveLength(0);
     }
-    // Keyboard: ArrowDown moves from search to the row; Enter in search chooses it.
+    // Keyboard: focus stays in search with the row highlighted; Enter
+    // chooses it.
+    expect(search).toHaveAttribute("aria-activedescendant", choice.id);
     await p.h.user.keyboard("{ArrowDown}");
-    expect(choice).toHaveFocus();
-    await p.h.user.click(screen.getByRole("searchbox"));
+    expect(search).toHaveFocus();
+    expect(choice).toHaveAttribute("data-selected");
     await p.h.user.keyboard("{Enter}");
     expect(p.validations).toHaveLength(1);
     expect(choice).toHaveTextContent("Checking…");
@@ -4558,6 +4561,47 @@ describe("project resource picker", () => {
     expect(p.h.messages.send.mock.calls[0]?.[1]).toBe(
       `[Fix login](${resource.uri}) `,
     );
+  });
+
+  it("puts titles with a word starting with the text first, newest first", async () => {
+    const issue = (id: string, title: string, created_at: number) => ({
+      ...item,
+      id: id.repeat(64),
+      created_at,
+      content: title,
+      tags: [
+        ["a", repository.address],
+        ["subject", title],
+      ],
+    });
+    const p = picker(undefined, [
+      issue("a", "Relogin bug", 9),
+      item,
+      issue("b", "Login page", 1),
+    ]);
+    await p.open();
+    const titles = async () =>
+      (
+        await screen.findAllByRole("button", { name: /, Issue in Game repo$/ })
+      ).map((choice) => choice.getAttribute("aria-label")?.split(",")[0]);
+    expect(await titles()).toEqual(["Relogin bug", "Fix login", "Login page"]);
+    const search = screen.getByRole("searchbox");
+    await p.h.user.type(search, "login");
+    expect(await titles()).toEqual(["Fix login", "Login page", "Relogin bug"]);
+    const choice = screen.getByRole("button", { name: row });
+    expect(search).toHaveAttribute("aria-activedescendant", choice.id);
+    expect(choice.querySelector("mark")).toHaveTextContent(/^login$/);
+    // Up wraps to the last row; Shift+Enter is not a choice.
+    await p.h.user.keyboard("{ArrowUp}");
+    expect(search).toHaveAttribute(
+      "aria-activedescendant",
+      screen.getByRole("button", { name: /^Relogin bug,/ }).id,
+    );
+    fireEvent.keyDown(search, { key: "Enter", shiftKey: true });
+    expect(p.validations).toHaveLength(0);
+    await p.h.user.keyboard("{ArrowDown}{Enter}");
+    expect(p.validations).toHaveLength(1);
+    expect(choice).toHaveTextContent("Checking…");
   });
 
   it("keeps focus in the popover while a clicked row is checked", async () => {

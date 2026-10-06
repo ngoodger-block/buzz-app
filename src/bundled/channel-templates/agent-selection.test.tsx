@@ -73,11 +73,17 @@ beforeEach(() => {
       ) => run({}),
     },
   });
+  // jsdom lacks scrollIntoView; the mention picker keeps its highlight in view.
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: vi.fn(),
+  });
 });
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   Reflect.deleteProperty(navigator, "locks");
+  Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
 });
 
 function harness(

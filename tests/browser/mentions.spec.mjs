@@ -110,16 +110,16 @@ test("actual composer selects namesakes by exact key, publishes channel/reply ta
           ...node.parentElement.querySelectorAll("[data-mention-choice]"),
         ].indexOf(node),
       );
-      await search.press("ArrowDown");
-      for (let step = 0; step < index; step++)
-        await page.keyboard.press("ArrowDown");
-      await expect(choice).toBeFocused();
+      // Focus stays in search; the first row starts highlighted.
+      for (let step = 0; step < index; step++) await search.press("ArrowDown");
+      await expect(choice).toHaveAttribute("data-selected", "true");
+      await expect(search).toBeFocused();
       await expect(choice).toHaveCSS("padding", "8px");
       await expect(choice.locator(".buzz-avatar")).toHaveCSS("width", "40px");
-      await choice.press("ArrowUp");
-      await page.keyboard.press("ArrowDown");
-      await expect(choice).toBeFocused();
-      await choice.press("Enter");
+      await search.press("ArrowUp");
+      await search.press("ArrowDown");
+      await expect(choice).toHaveAttribute("data-selected", "true");
+      await search.press("Enter");
       await expect(picker).toHaveCount(0);
       await expect(page.getByRole("textbox")).toBeFocused();
     };
@@ -180,10 +180,17 @@ test("actual composer selects namesakes by exact key, publishes channel/reply ta
         exact: true,
       });
       await expect(row).toHaveCSS("padding", "8px");
-      await row.hover();
-      await expect(row).toHaveCSS(
+      // The first row opens highlighted, so Enter picks it.
+      const highlighted = mention.locator(
+        "[data-mention-choice][data-selected]",
+      );
+      await expect(highlighted).toHaveCount(1);
+      await expect(
+        mention.locator("[data-mention-choice]").first(),
+      ).toHaveAttribute("data-selected", "true");
+      await expect(highlighted).toHaveCSS(
         "background-color",
-        mode === "light" ? "rgb(245, 245, 246)" : "rgb(51, 51, 51)",
+        mode === "light" ? "rgb(218, 218, 218)" : "rgb(64, 64, 64)",
       );
       await mention.getByRole("searchbox").fill("");
       const empty = await searchAppearance(mention.locator(".search-field"));

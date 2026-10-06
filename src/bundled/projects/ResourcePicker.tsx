@@ -10,6 +10,9 @@ import { Button } from "../../shared/design-system/ui/Button";
 import { IconButton } from "../../shared/design-system/ui/IconButton";
 import { GitPullRequestIcon } from "../../shared/design-system/icons/index";
 import type { ComposerToolProps } from "../../features/conversation/contracts";
+import { matchName } from "../../features/search/match";
+import { MatchedLabel } from "../../features/search/MatchedLabel";
+import { useSearchHighlight } from "../../features/search/use-search-highlight";
 import {
   entityFailure,
   value,
@@ -142,6 +145,38 @@ export function ResourcePicker({
     setRejected(undefined);
     setOpen(false);
   }, [disabled]);
+  const query = search.trim().toLowerCase();
+  // The same items as before match; titles with a word that starts with the
+  // text come first, newest first within each group.
+  const shown =
+    items.status === "ready"
+      ? items.items
+          .filter((item) =>
+            `${item.label} ${item.repository.name}`
+              .toLowerCase()
+              .includes(query),
+          )
+          .map((item) => {
+            const match = matchName(item.label, query);
+            return { item, match, later: !match || match.rank > 2 ? 1 : 0 };
+          })
+          .sort((a, b) => a.later - b.later)
+      : [];
+  const busy = !!checking && !checking.failed;
+  const highlight = useSearchHighlight({
+    query: search,
+    keys: disabled || busy ? [] : shown.map(({ item }) => item.id),
+    onChoose: (id) => {
+      const choice = shown.find(({ item }) => item.id === id);
+      if (choice) choose(choice.item);
+    },
+    open: open && !disabled && !!project,
+    // Enter chose the first row before anything was typed; keep that, and
+    // show which row it is.
+    highlightEmpty: true,
+    wrap: true,
+  });
+  const highlighted = shown.find(({ item }) => item.id === highlight.active);
   if (home === "none") return null;
   // A deleted or retargeted item must not become an accepted link.
   const choose = (item: Item) => {
@@ -182,13 +217,6 @@ export function ResourcePicker({
       },
     );
   };
-  const query = search.trim().toLowerCase();
-  const shown =
-    items.status === "ready"
-      ? items.items.filter((item) =>
-          `${item.label} ${item.repository.name}`.toLowerCase().includes(query),
-        )
-      : [];
   const label = "Add issue or pull request";
   return (
     <PopoverRoot
@@ -250,52 +278,6 @@ export function ResourcePicker({
             overflow: "hidden",
             display: "flex",
           }}
-          onKeyDown={(event) => {
-            if (
-              event.nativeEvent.isComposing ||
-              event.nativeEvent.keyCode === 229
-            )
-              return;
-            const fromSearch = event.target === searchInput.current;
-            if (event.key === "Enter" && fromSearch) event.preventDefault();
-            if (
-              event.altKey ||
-              event.ctrlKey ||
-              event.metaKey ||
-              event.shiftKey ||
-              !["ArrowDown", "ArrowUp", "Enter"].includes(event.key)
-            )
-              return;
-            const rows = Array.from(
-              event.currentTarget.querySelectorAll<HTMLButtonElement>(
-                "[data-resource-choice]:not(:disabled)",
-              ),
-            );
-            if (event.key === "Enter") {
-              if (!fromSearch) return;
-              event.stopPropagation();
-              rows[0]?.click();
-              return;
-            }
-            if (
-              !fromSearch &&
-              !rows.includes(event.target as HTMLButtonElement)
-            )
-              return;
-            event.preventDefault();
-            event.stopPropagation();
-            const current = rows.indexOf(
-              document.activeElement as HTMLButtonElement,
-            );
-            const step = event.key === "ArrowDown" ? 1 : -1;
-            rows[
-              current < 0
-                ? step > 0
-                  ? 0
-                  : rows.length - 1
-                : (current + step + rows.length) % rows.length
-            ]?.focus();
-          }}
           aria-label={label}
           finalFocus={!accepted.current}
         >
@@ -320,6 +302,15 @@ export function ResourcePicker({
                   value={search}
                   onValueChange={setSearch}
                   disabled={disabled}
+                  {...highlight.fieldProps}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.preventDefault();
+                    // Shift+Enter and Shift+arrows stay text keys, as before.
+                    const handled = !event.shiftKey && highlight.keyDown(event);
+                    // Keep these keys from the composer behind the popup.
+                    if (handled || event.key === "Enter")
+                      event.stopPropagation();
+                  }}
                 />
                 {items.status === "loading" && (
                   <p role="status">Loading issues and pull requests…</p>
@@ -349,19 +340,32 @@ export function ResourcePicker({
                 {(checking?.failed ?? rejected) && (
                   <p role="alert">{checking?.failed ?? rejected}</p>
                 )}
-                <div className={`${styles.choices} buzz-thin-scrollbar`}>
-                  {shown.map((item) => (
+                <div
+                  className={`${styles.choices} buzz-thin-scrollbar`}
+                  {...highlight.listProps}
+                >
+                  {shown.map(({ item, match }) => (
                     <NavigationItem
                       variant="option"
                       data-resource-choice=""
                       type="button"
                       key={item.id}
+                      {...highlight.rowProps(item.id)}
+                      selected={highlight.active === item.id}
+                      aria-current={false}
                       aria-label={`${item.label}, ${kinds[item.type]} in ${item.repository.name}`}
-                      disabled={disabled || (!!checking && !checking.failed)}
+                      disabled={disabled || busy}
                       onClick={() => choose(item)}
                       label={
                         <span className="flex flex-col whitespace-normal">
-                          <span>{item.label}</span>
+                          <MatchedLabel
+                            label={item.label}
+                            positions={
+                              query && match && match.rank <= 3
+                                ? match.positions
+                                : undefined
+                            }
+                          />
                           <small className="text-caption text-subtle">
                             {checking?.id === item.id && !checking.failed
                               ? "Checking…"
@@ -378,6 +382,11 @@ export function ResourcePicker({
                         : "This project has no issues or pull requests yet."}
                     </p>
                   )}
+                  <p role="status" className="sr-only">
+                    {highlighted
+                      ? `${highlighted.item.label}. Press Enter to add.`
+                      : ""}
+                  </p>
                 </div>
               </>
             )}

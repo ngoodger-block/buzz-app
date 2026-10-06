@@ -9,7 +9,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { StrictMode } from "react";
 import { createAgentControl } from "../../features/agents/control";
 import { controlFixture } from "../../features/agents/control-testing";
@@ -44,9 +44,17 @@ import { MessageMarkdown } from "../../features/messages/MessageMarkdown";
 import { profileTarget } from "../../features/profiles/target";
 import { npubEncode } from "nostr-tools/nip19";
 import { MENTION_DIRECTORY_DELAY_MS } from "./useMentionDirectory";
+// jsdom lacks scrollIntoView; the search highlight keeps its row in view.
+beforeEach(() => {
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: vi.fn(),
+  });
+});
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
 });
 function setup(parent: boolean | null = true, archived = false) {
   const key = "b".repeat(64),
@@ -270,7 +278,7 @@ it("focuses search on open and supports clear, Escape, and outside dismissal", a
   view.unmount();
   test.library.dispose();
 });
-it("navigates namesakes with arrows and selects the focused exact identity with Enter", async () => {
+it("navigates namesakes with arrows and selects the highlighted exact identity with Enter", async () => {
   const test = setup(),
     user = userEvent.setup(),
     select = vi.fn(() => true);
@@ -292,13 +300,21 @@ it("navigates namesakes with arrows and selects the focused exact identity with 
   const last = await screen.findByRole("button", {
     name: `Outside agent ${test.key}`,
   });
-  await user.keyboard("{ArrowDown}");
-  expect(first).toHaveFocus();
+  // Focus stays in search; the first row is highlighted before typing, and
+  // the arrows wrap.
+  const search = screen.getByRole("searchbox");
+  expect(search).toHaveFocus();
+  expect(search).toHaveAttribute("aria-activedescendant", first.id);
+  expect(first).toHaveAttribute("data-selected");
   await user.keyboard("{ArrowUp}");
-  expect(last).toHaveFocus();
+  expect(search).toHaveAttribute("aria-activedescendant", last.id);
+  expect(first).not.toHaveAttribute("data-selected");
   await user.keyboard("{ArrowDown}");
-  expect(first).toHaveFocus();
-  await user.keyboard("{ArrowDown}{Enter}");
+  expect(search).toHaveAttribute("aria-activedescendant", first.id);
+  await user.keyboard("{ArrowDown}");
+  expect(search).toHaveAttribute("aria-activedescendant", last.id);
+  expect(search).toHaveFocus();
+  await user.keyboard("{Enter}");
   expect(select).toHaveBeenCalledExactlyOnceWith({
     pubkey: test.key,
     name: "Outside agent",
@@ -1930,7 +1946,6 @@ it("keeps still-matching directory people across the inline host's per-keystroke
       disconnect() {}
     },
   );
-  HTMLElement.prototype.scrollIntoView = vi.fn();
   const t = setup();
   const larry = { pubkey: "f".repeat(64), name: "Larry Outside" };
   const lara = { pubkey: "e".repeat(64), name: "Lara" };
@@ -2017,7 +2032,6 @@ it("keeps still-matching directory people across the inline host's per-keystroke
   expect(options()).toEqual([]);
   input.remove();
   vi.unstubAllGlobals();
-  delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
 });
 
 it("the persistent toolbar picker reads an empty search again after close and reopen", async () => {

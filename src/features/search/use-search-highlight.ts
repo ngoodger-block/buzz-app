@@ -20,6 +20,8 @@ export function useSearchHighlight({
   onChoose,
   open = true,
   onOpen,
+  highlightEmpty = false,
+  wrap = false,
 }: {
   query: string;
   /** Row keys, in display order. */
@@ -31,6 +33,12 @@ export function useSearchHighlight({
   /** Called when Up or Down opens a closed popup. The key highlights the
    * first or last row. */
   onOpen?: () => void;
+  /** Highlight the first row before anything is typed, for a picker whose
+   * unfiltered list is already the list to choose from. */
+  highlightEmpty?: boolean;
+  /** Up from the first row goes to the last, and Down from the last row
+   * goes to the first. */
+  wrap?: boolean;
 }) {
   const id = useId();
   const [selection, setSelection] = useState({
@@ -42,7 +50,7 @@ export function useSearchHighlight({
     moves: 0,
   });
   const valid = selection.query === query && keys.includes(selection.key);
-  const fallback = query.trim() ? (keys[0] ?? "") : "";
+  const fallback = highlightEmpty || query.trim() ? (keys[0] ?? "") : "";
   if (!valid && (selection.query !== query || selection.key !== fallback))
     setSelection({ query, key: fallback, pointer: false, moves: 0 });
   const active = valid ? selection.key : fallback;
@@ -141,12 +149,15 @@ export function useSearchHighlight({
       }
       if (arrow && keys.length) {
         event.preventDefault();
+        const step = index + (down ? 1 : -1);
         const next =
           index < 0
             ? down
               ? 0
               : keys.length - 1
-            : Math.max(0, Math.min(keys.length - 1, index + (down ? 1 : -1)));
+            : wrap
+              ? (step + keys.length) % keys.length
+              : Math.max(0, Math.min(keys.length - 1, step));
         select(keys[next] ?? "");
         return true;
       }
