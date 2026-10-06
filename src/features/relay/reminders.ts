@@ -149,10 +149,16 @@ export function createReminders(options: {
     });
     for (const listener of listeners) listener();
   };
-  // A replaceable coordinate keeps only its newest version; ties keep the known one.
+  // The relay's replaceable rule: newest created_at wins, then the lowest event id.
   const merge = (reminder: Reminder) => {
     const current = heads.get(reminder.id);
-    if (current && current.createdAt >= reminder.createdAt) return false;
+    if (
+      current &&
+      (current.createdAt > reminder.createdAt ||
+        (current.createdAt === reminder.createdAt &&
+          current.eventId <= reminder.eventId))
+    )
+      return false;
     heads.set(reminder.id, reminder);
     return true;
   };
@@ -172,17 +178,30 @@ export function createReminders(options: {
     }
     return changed;
   }
-  async function replace(
+  // Edits to one coordinate run in order, each building on the previous result.
+  const queues = new Map<string, Promise<void>>();
+  function replace(
     id: string,
     next: (current: Reminder) => Omit<ReminderIntent, "d" | "createdAt">,
   ) {
-    const current = heads.get(id);
-    if (!current) throw new Error("Reminder not found");
-    await write({
-      ...next(current),
-      d: id,
-      createdAt: Math.max(now(), current.createdAt + 1),
-    });
+    const run = (queues.get(id) ?? Promise.resolve())
+      .catch(() => {})
+      .then(async () => {
+        const current = heads.get(id);
+        if (!current) throw new Error("Reminder not found");
+        await write({
+          ...next(current),
+          d: id,
+          createdAt: Math.max(now(), current.createdAt + 1),
+        });
+      });
+    queues.set(id, run);
+    void run
+      .finally(() => {
+        if (queues.get(id) === run) queues.delete(id);
+      })
+      .catch(() => {});
+    return run;
   }
   async function write(intent: ReminderIntent) {
     const event = await host.sign(intent, signal);
