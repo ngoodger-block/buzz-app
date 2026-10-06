@@ -19,6 +19,8 @@ export function WorkflowChannelPicker({
           if (channel) onSelect(channel.id);
         }}
         defaultOpen
+        // Typed text highlights the first match, so Enter picks it.
+        autoHighlight
       >
         <Combobox.Control
           label="Choose a channel"
