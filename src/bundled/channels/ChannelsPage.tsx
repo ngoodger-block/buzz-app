@@ -1840,6 +1840,7 @@ function ChannelWorkspace({
                                   chooseTool(tab.id, panel)
                                 }
                                 icon={conversationIcon}
+                                usageScope={scope}
                                 choose={(channelId) =>
                                   chooseConversation(tab.id, channelId)
                                 }
