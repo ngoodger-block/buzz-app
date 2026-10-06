@@ -73,7 +73,9 @@ export function MessageTimestamp({
         className={compact ? styles.continuationTime : undefined}
       >
         <span aria-hidden="true">{label}</span>
-        <span className="sr-only">{fullDate}</span>
+        {/* Engines copy visually hidden text; a selection across rows would
+            otherwise repeat every clock as a date the reader never saw. */}
+        <span className="sr-only select-none">{fullDate}</span>
       </time>
     </Tooltip>
   );

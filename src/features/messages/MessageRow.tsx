@@ -358,7 +358,7 @@ export const MessageRow = memo(function MessageRow({
                   statusBadge={presence === "unknown" ? undefined : presence}
                 />
                 {presence !== "unknown" && (
-                  <span className="sr-only" id={presenceId}>
+                  <span className="sr-only select-none" id={presenceId}>
                     Presence: {presence}
                   </span>
                 )}
@@ -482,8 +482,14 @@ export const MessageRow = memo(function MessageRow({
                 }
               />
             )}
+            {/* Screen-reader text stays out of selections: the clipboard carries
+                what the reader saw, so a continuation copies without a byline. */}
             <div
-              className={layout === "continuation" ? "sr-only" : styles.byline}
+              className={
+                layout === "continuation"
+                  ? "sr-only select-none"
+                  : styles.byline
+              }
             >
               <strong className={styles.author}>{name}</strong>
               {layout !== "continuation" && (

@@ -159,17 +159,21 @@ export function MessageReactionControls(props: Props) {
               aria-pressed={mine}
               onClick={() => select(content)}
               icon={
-                <span className={styles.quickReactionGlyph}>
-                  <ReactionLabel
-                    row={row}
-                    inline={inline}
-                    session={session}
-                    reaction={{
-                      content,
-                      ...(emoji ? { emoji } : {}),
-                      events: [],
-                    }}
-                  />
+                // A native glyph is CSS content, not a text node: selections
+                // spanning rows pass through this bar, and DOM-walking copy
+                // handlers would otherwise read it as conversation text.
+                <span
+                  className={styles.quickReactionGlyph}
+                  data-emoji={emoji ? undefined : content}
+                >
+                  {emoji && (
+                    <ReactionLabel
+                      row={row}
+                      inline={inline}
+                      session={session}
+                      reaction={{ content, emoji, events: [] }}
+                    />
+                  )}
                 </span>
               }
             />
