@@ -110,6 +110,7 @@ export function AppShell({
       <nav aria-label="Pages" className="shell-pages">
         {primaryPages.map((page) => {
           const { label, icon, image } = pagePresentation(page);
+          const Badge = page.badge;
           return (
             <NavigationItem
               type="button"
@@ -122,6 +123,7 @@ export function AppShell({
               }}
               selected={selected === page.key}
               label={label}
+              trailing={Badge && <Badge />}
               icon={
                 <span className="shell-page-icon">
                   <PageIcon

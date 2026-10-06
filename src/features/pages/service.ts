@@ -39,6 +39,8 @@ export type Page = Readonly<{
    * pages keep their host icons.
    */
   icon?: string;
+  /** Plugin-owned count or mark shown at the end of the page's navigation row. */
+  badge?: ComponentType;
 }>;
 export type RegisteredPage = Contribution<Page>;
 export type PagesReader = {
@@ -74,7 +76,8 @@ export class PagesService extends Service implements Pages {
         page.layout !== "document" &&
         page.layout !== "workspace") ||
       (page.companion !== undefined && typeof page.companion !== "boolean") ||
-      (page.primary !== undefined && typeof page.primary !== "boolean")
+      (page.primary !== undefined && typeof page.primary !== "boolean") ||
+      (page.badge !== undefined && typeof page.badge !== "function")
     ) {
       throw new Error(
         "A page needs an id, a title, and a React component function",
