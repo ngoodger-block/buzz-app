@@ -113,4 +113,5 @@ persistence remain disabled.
 
 The next layer cannot satisfy its inference contract with the tested tools. See
 [Codex validation prerequisites](codex-validation-prerequisites.md) for the
-required deny-all tool capability and strict no-fallback runtime behavior.
+required deny-all tool capability. Existing runtime fallback behavior is preserved
+and is no longer an enablement prerequisite.

@@ -1,6 +1,6 @@
 # Codex validation prerequisites
 
-PR 4 of the [Codex harness plan](https://github.com/block/buzz-app/blob/codex/codex-harness-plan/docs/codex-harness-plan.md) requires real inference before identity creation or execution-setting edits, with no tool execution and no fallback to a different model or effort. Discovery does not establish either property. Codex creation must remain disabled until these prerequisites are implemented and verified.
+PR 4 of the [Codex harness plan](https://github.com/block/buzz-app/blob/codex/codex-harness-plan/docs/codex-harness-plan.md) requires real inference before identity creation or execution-setting edits, with no tool execution. Advanced validation must confirm the requested model and effort. Discovery does not establish these properties. Codex creation must remain disabled until tool-free validation is implemented and verified. Runtime fallback behavior remains the same as the current buzz-app runtime.
 
 ## Tool-free inference
 
@@ -32,12 +32,12 @@ Falsifiable acceptance tests for the prerequisite:
 - Reject an unsupported CLI before inference, including when the user's configuration contains MCP servers. Test timeout, cancellation, and complete child retirement through the production adapter path.
 - Through Buzz's real validation admission, prove failures produce no identity or agent-record write, and successful admission binds only the exact checked input and saved revision.
 
-## Runtime selection without fallback
+## Runtime fallback: preserve existing behavior
 
 The pinned [Buzz pool at 4f51b9e](https://github.com/block/buzz/blob/4f51b9e1010e086a16c099cd8d8218ca974a5e18/crates/buzz-acp/src/pool.rs) treats application-level model or startup-effort rejection as nonfatal and may continue with defaults. It also proceeds when a desired model cannot be resolved or configured effort has no matching option. This behavior remains present in the upstream main source inspected during this work.
 
-A focused upstream change must provide strict selection semantics for the Codex integration: a requested model or effort that is unavailable, rejected, or not confirmed fails the affected session/turn before inference. No alternate selection may be sent. Default may resolve settings at session creation but must not select replacements after inference fails. The failure must reach Buzz's existing host status/error surface with a bounded, sanitized cause.
+The product decision on October 6, 2026 is to retain this existing behavior. This stack must not change runtime model/effort fallback policy or require an upstream fix or runtime-pin update for that purpose. Runtime fallback is no longer an enablement blocker.
 
-This requires a reviewed runtime-pin update in buzz-app after the upstream change. Tests must bind actual pool startup and prompt delivery, reject each model/effort path, and assert zero prompts or fallback requests plus visible failure. Quota, access, network, and context-limit failures must retain their distinct known meanings.
+The separate Create/Edit validation contract remains: Advanced validation must confirm the requested settings before admitting a save. PR 6 must distinguish requested settings from settings actually reported by the runtime, including any fallback; it must not present a requested setting as observed evidence.
 
-Until both prerequisites pass, PRs 4–6 cannot meet the approved enablement contract. No inference was run as part of this source investigation, and no ordinary CLI configuration, credentials, or global installation was modified.
+Tool-free inference remains the unresolved prerequisite for PR 4 and its dependent layers. No inference was run as part of this source investigation, and no ordinary CLI configuration, credentials, or global installation was modified.
