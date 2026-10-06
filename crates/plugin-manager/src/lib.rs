@@ -31,6 +31,9 @@ pub struct HostGrants {
     pub commands: Vec<HostCommand>,
     #[serde(default)]
     pub network_origins: Vec<String>,
+    /// Lists, installs, enables, disables and removes plugins through the app.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plugins: bool,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -825,6 +828,19 @@ mod tests {
             invalid["host"]["commands"][0]["maxOutputBytes"] = limit;
             assert!(artifact_from_text(&invalid.to_string(), "export const x = 1".into()).is_err());
         }
+        let parsed: Manifest = serde_json::from_value(manifest.clone()).unwrap();
+        assert!(!parsed.host.as_ref().unwrap().plugins);
+        assert!(!serde_json::to_string(&parsed).unwrap().contains("plugins"));
+        let mut managing = manifest.clone();
+        managing["host"]["plugins"] = serde_json::json!(true);
+        let parsed: Manifest = serde_json::from_value(managing.clone()).unwrap();
+        assert!(parsed.host.as_ref().unwrap().plugins);
+        assert!(serde_json::to_string(&parsed)
+            .unwrap()
+            .contains(r#""plugins":true"#));
+        assert!(artifact_from_text(&managing.to_string(), "export const x = 1".into()).is_ok());
+        managing["host"]["plugins"] = serde_json::json!("all");
+        assert!(artifact_from_text(&managing.to_string(), "export const x = 1".into()).is_err());
         for invalid_origin in [
             "http://api.example.com",
             "https://api.example.com/path",

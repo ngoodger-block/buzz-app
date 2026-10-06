@@ -22,6 +22,9 @@ function hostGrants(manifest: PluginManifest): string[] {
     ...(manifest.host?.networkOrigins ?? []).map(
       (origin) => `HTTPS origin: ${origin}`,
     ),
+    ...(manifest.host?.plugins
+      ? ["Manage plugins: install, turn on or off, and remove plugins"]
+      : []),
   ];
 }
 

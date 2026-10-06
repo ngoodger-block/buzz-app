@@ -240,6 +240,7 @@ mod tests {
         let grants = HostGrants {
             commands: vec![],
             network_origins: vec!["https://api.example.test".into()],
+            ..HostGrants::default()
         };
         for url in [
             "https://api.example.test/",

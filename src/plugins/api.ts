@@ -16,6 +16,8 @@ export type PluginManifest = Readonly<{
       maxOutputBytes?: number;
     }>[];
     networkOrigins?: readonly string[];
+    /** Manage plugins through `ctx.host.plugins`. */
+    plugins?: boolean;
   }>;
 }>;
 // Module evaluation must be pure. apply owns resources through ctx.effect.
