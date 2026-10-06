@@ -871,6 +871,19 @@ it("duplicates editable settings into a new identity without copying write-only 
       expect.any(String),
       "wss://relay.example.test",
       "de".repeat(32),
+      {
+        name: "Fixture agent copy",
+        systemPrompt: "Be concise",
+        workspace: "/fixture/workspace",
+        sessionPolicy: null,
+        harness: {
+          command: "fixture-acp",
+          args: ["--literal", "two words", 'quoted "value"'],
+          model: "example-model",
+          provider: "openai",
+        },
+        environment: { BUZZ_ACP_AGENTS: "10" },
+      },
     ),
   );
   await waitFor(() => expect(commit).toHaveBeenCalled());
@@ -3090,6 +3103,19 @@ it("clones reviewed text through fresh identity creation without importing sourc
     expect.any(String),
     "https://relay.example.test",
     "de".repeat(32),
+    {
+      name: "Source helper",
+      systemPrompt: "Reviewed instructions",
+      workspace: "/new/workspace",
+      sessionPolicy: null,
+      harness: {
+        command: "buzz-agent",
+        args: [],
+        model: "",
+        provider: "databricks_v2",
+      },
+      environment: { BUZZ_ACP_AGENTS: "10" },
+    },
   );
   expect(authorization).toHaveBeenCalledWith(
     "https://relay.example.test",
