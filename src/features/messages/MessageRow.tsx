@@ -242,7 +242,17 @@ export const MessageRow = memo(function MessageRow({
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const active = useConversationPresentation();
   const [reporting, setReporting] = useState<"open" | "sent">();
-  const reportActive = reporting !== undefined;
+  const registeredActions = useSyncExternalStore(
+    extensions?.actions?.subscribe ?? noSubscribe,
+    extensions?.actions?.snapshot ?? noActions,
+    extensions?.actions?.snapshot ?? noActions,
+  );
+  const actions = session
+    ? registeredActions.filter((action) => action.matches(row, session))
+    : [];
+  const [openAction, setOpenAction] = useState<string>();
+  const opened = actions.find((action) => action.key === openAction);
+  const reportActive = reporting !== undefined || !!opened;
   // The dialog, pending submit and notice live in this row; eviction loses them.
   useEffect(() => {
     const release = reportActive ? keepMounted?.(row.id) : undefined;
@@ -270,6 +280,16 @@ export const MessageRow = memo(function MessageRow({
       Report
     </MenuItem>
   );
+  const actionItems = actions.map(({ key, title, icon: Icon }) => (
+    <MenuItem key={key} onClick={() => setOpenAction(key)}>
+      {Icon && (
+        <MenuIcon>
+          <Icon />
+        </MenuIcon>
+      )}
+      {title}
+    </MenuItem>
+  ));
   // Keep mixed attachments in sender order; only adjacent images share a strip.
   const attachmentGroups: ChannelMessage["attachments"][number][][] = [];
   for (const attachment of row.attachments) {
@@ -393,6 +413,13 @@ export const MessageRow = memo(function MessageRow({
           </span>
         )}
         <div className={styles.messageBody}>
+          {opened && session && (
+            <opened.component
+              message={row}
+              session={session}
+              close={() => setOpenAction(undefined)}
+            />
+          )}
           {report && reporting === "open" && (
             <ReportMessageDialog
               report={(type, note) => report(row.id, type, note)}
@@ -477,6 +504,7 @@ export const MessageRow = memo(function MessageRow({
                       (session ? (
                         <MessageManagementItems row={row} session={session} />
                       ) : undefined)}
+                    {actionItems}
                     {reportItem}
                   </>
                 }
@@ -489,6 +517,13 @@ export const MessageRow = memo(function MessageRow({
               {layout !== "continuation" && (
                 <MessageTimestamp createdAt={row.createdAt} />
               )}
+              {session &&
+                actions.map(
+                  ({ key, marker: Marker }) =>
+                    Marker && (
+                      <Marker key={key} message={row} session={session} />
+                    ),
+                )}
             </div>
           </div>
           {row.sentFromThread && (
@@ -762,6 +797,8 @@ function useThreadUnread(
   return useSyncExternalStore(subscribe, get, get);
 }
 const noSubscribe = () => () => {};
+const none: readonly never[] = [];
+const noActions = () => none;
 const noLibrary = () => undefined;
 // App-managed agents publish typing, not observer telemetry, while they work.
 // A joined-key snapshot keeps unrelated typing from re-rendering the row. Like
