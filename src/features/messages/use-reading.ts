@@ -4,8 +4,13 @@ import type { ReadingHandle } from "../relay/unread";
 import { useMessageEditScope } from "./MessageEditScope";
 
 /** Wake dwell after owner-controlled positioning, even when geometry is unchanged. */
-export function readingPositioned(element: HTMLElement | null) {
-  element?.dispatchEvent(new Event("reading-positioned"));
+export function readingPositioned(
+  element: HTMLElement | null,
+  reason?: "exact-reveal",
+) {
+  element?.dispatchEvent(
+    new CustomEvent("reading-positioned", { detail: { reason } }),
+  );
 }
 
 type Reading = {

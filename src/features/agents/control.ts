@@ -252,7 +252,7 @@ export interface AgentControlHost {
     owner: string,
     edit: AgentEdit,
     validationProof?: string,
-  ): Promise<{ id: string; pubkey: string }>;
+  ): Promise<{ id: string; pubkey: string; completed?: boolean }>;
   commitCreate?(
     requestId: string,
     edit: AgentEdit,
@@ -663,6 +663,7 @@ export function createAgentControl(
                   edit,
                 );
                 id = prepared.id;
+                if (prepared.completed) return native.snapshot();
                 const result = await communityRequest<{ auth: string[] }>(
                   destination,
                   "authorize-agent",

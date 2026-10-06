@@ -37,6 +37,27 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+it("returns the completed native request without authorizing or committing another agent", async () => {
+  const fixture = controlFixture();
+  fixture.host.prepareCreate = vi.fn(async () => ({
+    ...fixture.agent,
+    completed: true,
+  }));
+  fixture.host.commitCreate = vi.fn();
+  const authorize = vi.spyOn(communityApi, "communityRequest");
+  const control = createAgentControl(fixture.host);
+  await control.refresh();
+  const created = await control.create?.(
+    "request",
+    fixture.agent.relayUrl,
+    "owner",
+    agentEdit(agentDraft(fixture.agent)),
+  );
+  expect(created?.id).toBe(fixture.agent.id);
+  expect(authorize).not.toHaveBeenCalled();
+  expect(fixture.host.commitCreate).not.toHaveBeenCalled();
+  control.dispose();
+});
 it("browser is unavailable without any host or runner", async () => {
   const control = createAgentControl(null);
   await control.refresh();

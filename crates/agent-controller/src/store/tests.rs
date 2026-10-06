@@ -900,6 +900,13 @@ fn pending_create_survives_reopen_and_finishes_with_one_atomic_record_write() {
         commitment: "ef".repeat(32),
     };
     let mut store = Store::open(root.path().into()).unwrap();
+    let protection = Binding {
+        provider: "sandbox".into(),
+        policy: json!({"network": false}),
+    };
+    store
+        .set_launch_protection_defaults(0, Some(protection.clone()))
+        .unwrap();
     store.stage_pending_create(pending.clone()).unwrap();
     drop(store);
 
@@ -919,6 +926,10 @@ fn pending_create_survives_reopen_and_finishes_with_one_atomic_record_write() {
     let reopened = Store::open(root.path().into()).unwrap();
     assert!(reopened.pending_create().unwrap().is_none());
     assert_eq!(reopened.agents().unwrap()[0].id, agent.id);
+    assert_eq!(
+        Binding::decode(reopened.agents().unwrap()[0].extra.get(PROTECTION_KEY)).unwrap(),
+        Some(protection)
+    );
     let saved: Value =
         serde_json::from_slice(&fs::read(root.path().join("agents.json")).unwrap()).unwrap();
     assert!(saved.get("pendingCreate").is_none());

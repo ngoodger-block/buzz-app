@@ -98,6 +98,27 @@ impl NewAgent {
     }
 }
 impl Controller {
+    /// Find a completed request without generating a key. Receipts live with
+    /// their saved agent and never cross the ordinary inventory projection.
+    pub fn completed_create_request(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<crate::PendingCreateRecovery>> {
+        for agent in self.store.agents()? {
+            let Some(value) = agent.extra.get("createReceipt") else {
+                continue;
+            };
+            let receipt: crate::PendingCreateRecovery = serde_json::from_value(value.clone())
+                .map_err(|_| "Saved create receipt is malformed")?;
+            if receipt.request_id == request_id {
+                if receipt.agent_id != agent.id || receipt.pubkey != agent.pubkey {
+                    return Err("Saved create receipt does not match its agent".into());
+                }
+                return Ok(Some(receipt));
+            }
+        }
+        Ok(None)
+    }
     /// Public recovery metadata; inspecting it never opens credential storage.
     pub fn pending_create_recovery(&self) -> Result<Option<crate::PendingCreateRecovery>> {
         self.store.pending_create()
@@ -118,7 +139,36 @@ impl Controller {
         agent
             .extra
             .insert("profilePending".into(), Value::Bool(true));
+        agent.extra.insert(
+            "createReceipt".into(),
+            serde_json::to_value(pending).map_err(|_| "Could not encode create receipt")?,
+        );
         self.store.finish_pending_create(pending, agent)
+    }
+    /// Preserve legacy creation and retry behavior while atomically remembering
+    /// the completed request. Codex must use its validated recovery path.
+    pub fn create_requested(
+        &mut self,
+        prepared: &NewAgent,
+        edit: AgentEdit,
+        auth: &str,
+        receipt: &crate::PendingCreateRecovery,
+    ) -> Result<()> {
+        if self.codex_create_validation(edit.clone())?.is_some() {
+            return Err("Native Codex creation requires a current validation proof".into());
+        }
+        let mut agent = prepared.agent(edit, auth)?;
+        if agent.id != receipt.agent_id || agent.pubkey != receipt.pubkey {
+            return Err("Create receipt does not match its agent".into());
+        }
+        agent
+            .extra
+            .insert("profilePending".into(), Value::Bool(true));
+        agent.extra.insert(
+            "createReceipt".into(),
+            serde_json::to_value(receipt).map_err(|_| "Could not encode create receipt")?,
+        );
+        self.store.insert(vec![agent])
     }
     /// Retire the exact journal after the caller confirms credential cleanup.
     pub fn discard_create_recovery(

@@ -422,7 +422,7 @@ function ThreadMessages({
     // position through prepended history without refocusing it after opening.
     targetAnchor.current = selectedOffset();
     readingSettled.current = true;
-    readingPositioned(scroller.current);
+    readingPositioned(scroller.current, "exact-reveal");
     navigation?.complete({ status: "opened" });
   }, [navigation, selectedOffset]);
   const prepareTarget = useCallback(() => {

@@ -353,11 +353,12 @@ async fn rpc(context: &GooseModelContext, method: &str, params: Value) -> Result
     command.args(&context.args).stdin(Stdio::piped());
     #[cfg(unix)]
     command.process_group(0);
-    let mut child = CheckChild(
-        command
-            .spawn()
-            .map_err(|_| "Could not start Goose to list models".to_owned())?,
-    );
+    let mut child = CheckChild(command.spawn().map_err(|error| {
+        #[cfg(test)]
+        eprintln!("Goose catalog fixture spawn failed: {error}");
+        let _ = error;
+        "Could not start Goose to list models".to_owned()
+    })?);
     let mut stdin = child
         .0
         .stdin
@@ -877,10 +878,20 @@ exec "$BUZZ_GOOSE_TEST_EXE" --exact goose_models::tests::acp_connection_test_che
             ("goose-acp", vec![], r#"[ "$#" -eq 0 ] || exit 1"#),
         ] {
             let command = dir.path().join(name);
-            std::fs::write(&command, format!(r#"#!/bin/sh
+            // A parallel fork may inherit a write handle for a freshly written
+            // executable, causing ETXTBSY on Linux. Match the Pi fixture: only
+            // a single-threaded copy process opens the executable for writing.
+            let source = dir.path().join(format!("{name}.sh"));
+            std::fs::write(&source, format!(r#"#!/bin/sh
 {argument_check}
 exec "$BUZZ_GOOSE_TEST_EXE" --exact goose_models::tests::one_shot_acp_request_reads_catalog_before_closing_stdin --nocapture 3>&1 >/dev/null
 "#)).unwrap();
+            assert!(std::process::Command::new("/bin/cp")
+                .arg(&source)
+                .arg(&command)
+                .status()
+                .unwrap()
+                .success());
             std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o700)).unwrap();
             let context = GooseModelContext {
                 command,

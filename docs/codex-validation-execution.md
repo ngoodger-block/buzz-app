@@ -187,8 +187,67 @@ Default and Advanced inference, the signed disposable-channel reply, full
 Create/Edit/Stop/reopen acceptance, GUI forms, and OS credential-store acceptance
 remain unverified. Keep this PR draft until the applicable acceptance is complete.
 
-The durable recovery record contains public identity fields and a hash commitment,
-not keys, authorization payloads, or plaintext execution settings. Resume requires
-the original edit and authorization inputs and the exact durable key. Missing keys
-require explicit discard and a new validated request. Unknown credential cleanup
-outcomes retain the journal for retry.
+The durable Codex recovery record contains public identity fields and a hash
+commitment, not keys, authorization payloads, or plaintext execution settings.
+Resume requires the original execution inputs, fresh valid owner authorization,
+and the exact durable key. The signature bytes are not part of the commitment:
+signing again after relaunch uses new randomness but authorizes the same identity.
+Missing keys require explicit discard and a new validated request. Unknown
+credential cleanup outcomes retain the journal for retry. Journals from the
+earlier draft that committed the signature bytes require explicit discard.
+
+## PR 4 review corrections
+
+The recovery journal is limited to Codex until PR 5 exposes its recovery controls.
+Existing Buzz Agent, Goose, and Pi forms retain their prepared identity after a
+credential refusal and can retry through the existing Create flow. Codex remains
+disabled in those forms; its native recovery commands allow reauthorization of
+the journaled identity after relaunch. The driver must resubmit the original
+execution inputs; they are intentionally not exposed by the public recovery view.
+
+Every completed native Create now stores a public request receipt atomically with
+the agent. A retry after a lost response or post-save snapshot failure returns that
+identity, without another authorization or credential write. Receipts live for
+the lifetime of the saved agent and are not projected in the ordinary inventory.
+Changed request inputs are rejected. Codex commit and recovery also copy the
+configured launch-protection defaults through the same owner used by other new
+agents, preserving explicit bindings.
+
+Regression coverage invokes the real native commands with synthetic credentials
+and a controlled Codex ACP process. It covers credential denial for the three
+existing harnesses; successful persistence followed by a failed response and
+fresh-host retry; failed/cancelled inference admission; mismatched and consumed
+proofs; interruption after key persistence; fresh randomized owner authorization;
+forged authorization; and failed/stale/successful Edit admission. The test destroys
+the old native host, retains only the synthetic secure-storage boundary, and
+reconstructs the public input for recovery. This is native protocol and persistence
+evidence, not OS Keychain or live service acceptance.
+
+The Edit fixture uses a stopped agent; preserving a running agent on failed Edit
+and restarting it after successful Edit still require lifecycle acceptance.
+
+Review-fix validation:
+
+- All three new native regression tests fail against the original implementation
+  and pass with these fixes. The protection-default regression also fails before
+  the fix and passes afterward.
+- Controller: 162 unit tests and 16 integration tests passed; 2 opt-in tests ignored.
+- Tauri library: 286 passed, 10 ignored, and the previously documented local
+  `converts_tiled_heic_without_cropping` fixture failed (512×512 instead of
+  1536×1024). The full local native suite is not green.
+- Focused agent-control and reading-position tests: 111 passed across 3 files.
+- Inbox browser suite: all 16 cases passed across Chromium and WebKit in 35 seconds.
+- Hosted Linux confirmation remains pending publication of the fixes.
+
+The Linux Goose fixture now creates its executable using the existing Pi fixture's
+single-threaded copy pattern, avoiding inherited write handles during parallel
+forks. Test-only diagnostics retain the underlying spawn error. The Inbox browser
+test waits for the existing positioning event's exact-reveal completion reason
+before moving keyboard focus to Retry. No browser cases were added or removed;
+the existing case still tests native focus and layout in Chromium and WebKit.
+
+Readiness permissions remain in PR 4 in this update. Before merging the stack
+bottom-up, move their registration, capability entries, and invoke-boundary test
+into PR 2. This PR does not rewrite its parent branches. Successful real Default
+and Advanced inference, signed channel reply, live lifecycle acceptance, and
+human confirmation remain required before enablement.

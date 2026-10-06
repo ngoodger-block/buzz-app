@@ -1560,6 +1560,12 @@ pub(crate) async fn agent_control_create_prepare(
 ) -> Result<serde_json::Value, String> {
     let validation = validation.inner().clone();
     run(state.inner().clone(), move |host| {
+        if let Some(receipt) = checked_create_receipt(host, &request_id, &edit)? {
+            if receipt.destination != NewAgent::validate_target(&destination, &owner)? || receipt.owner != owner {
+                return Err("Create request belongs to another destination or owner".into());
+            }
+            return Ok(serde_json::json!({"id": receipt.agent_id, "pubkey": receipt.pubkey, "completed": true}));
+        }
         if let Some(pending) = host.controller.pending_create_recovery()? {
             return Err(if pending.request_id == request_id {
                 "This create requires recovery; resume or discard it before retrying".into()
@@ -1607,7 +1613,6 @@ pub(crate) async fn agent_control_create_prepare(
 fn bind_create_recovery(
     mut record: buzz_agent_controller::PendingCreateRecovery,
     edit: &AgentEdit,
-    auth: &str,
     admission: Option<&crate::codex_validation::Admission>,
 ) -> Result<buzz_agent_controller::PendingCreateRecovery, String> {
     let codex = admission
@@ -1620,12 +1625,31 @@ fn bind_create_recovery(
         "agentId": record.agent_id,
         "pubkey": record.pubkey,
         "edit": edit,
-        "auth": auth,
         "codex": codex,
     }))
     .map_err(|_| "Could not bind the create recovery request")?;
     record.commitment = format!("{:x}", Sha256::digest(bytes));
     Ok(record)
+}
+
+fn checked_create_receipt(
+    host: &Host,
+    request_id: &str,
+    edit: &AgentEdit,
+) -> Result<Option<buzz_agent_controller::PendingCreateRecovery>, String> {
+    let Some(receipt) = host.controller.completed_create_request(request_id)? else {
+        return Ok(None);
+    };
+    let admission = crate::codex_validation::create_admission(
+        request_id,
+        &receipt.destination,
+        &receipt.owner,
+        host.controller.codex_create_validation(edit.clone())?,
+    )?;
+    if bind_create_recovery(receipt.clone(), edit, admission.as_ref())? != receipt {
+        return Err("Create request already completed with different settings".into());
+    }
+    Ok(Some(receipt))
 }
 
 fn read_create_recovery_key(
@@ -1668,6 +1692,15 @@ pub(crate) async fn agent_control_create_authorize(
     pubkey: String,
 ) -> Result<Vec<String>, String> {
     let (owner, pubkey) = run(state.inner().clone(), move |host| {
+        if let Some(pending) = host.controller.pending_create_recovery()? {
+            if pending.pubkey != pubkey
+                || pending.destination != NewAgent::validate_target(&destination, &owner)?
+                || pending.owner != owner
+            {
+                return Err("Authorization does not match the pending create request".into());
+            }
+            return Ok((owner, pubkey));
+        }
         let pending = host
             .creating
             .as_ref()
@@ -1691,6 +1724,13 @@ pub(crate) async fn agent_control_create_commit(
 ) -> Result<Snapshot, String> {
     let owner = state.inner().clone();
     let lane = owner.2.clone().lock_owned().await;
+    if let Some(snapshot) = owner.with(|host| {
+        checked_create_receipt(host, &request_id, &edit)?
+            .map(|_| host.snapshot())
+            .transpose()
+    })? {
+        return Ok(snapshot);
+    }
     let (prepared, credentials, request_id, edit, auth, admission, recovery) =
         owner.with(|host| {
             let pending = host
@@ -1719,10 +1759,11 @@ pub(crate) async fn agent_control_create_commit(
                     commitment: String::new(),
                 },
                 &edit,
-                &auth,
                 pending.admission.as_ref(),
             )?;
-            host.controller.stage_create_recovery(recovery.clone())?;
+            if pending.admission.is_some() {
+                host.controller.stage_create_recovery(recovery.clone())?;
+            }
             Ok((
                 prepared.clone(),
                 host.credentials.clone(),
@@ -1760,8 +1801,13 @@ pub(crate) async fn agent_control_create_commit(
         if host.creating.as_ref().map(|pending| &pending.request_id) != Some(&request_id) {
             return Err("Create request was replaced".into());
         }
-        host.controller
-            .finish_create_recovery(&prepared, edit, &auth, &recovery)?;
+        if admission.is_some() {
+            host.controller
+                .finish_create_recovery(&prepared, edit, &auth, &recovery)?;
+        } else {
+            host.controller
+                .create_requested(&prepared, edit, &auth, &recovery)?;
+        }
         host.creating = None;
         host.snapshot()
     })
@@ -1820,7 +1866,7 @@ pub(crate) async fn agent_control_create_resume(
             &pending.owner,
             host.controller.codex_create_validation(edit.clone())?,
         )?;
-        let expected = bind_create_recovery(pending.clone(), &edit, &auth, admission.as_ref())?;
+        let expected = bind_create_recovery(pending.clone(), &edit, admission.as_ref())?;
         if expected != pending {
             return Err(
                 "Create recovery input changed; use the original settings or discard it".into(),
@@ -1845,7 +1891,7 @@ pub(crate) async fn agent_control_create_resume(
             &pending.owner,
             host.controller.codex_create_validation(edit.clone())?,
         )?;
-        let expected = bind_create_recovery(pending.clone(), &edit, &auth, admission.as_ref())?;
+        let expected = bind_create_recovery(pending.clone(), &edit, admission.as_ref())?;
         if expected != pending {
             return Err(
                 "Create recovery input changed; use the original settings or discard it".into(),

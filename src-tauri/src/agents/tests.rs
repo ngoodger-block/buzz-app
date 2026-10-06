@@ -2534,32 +2534,11 @@ fn native_create_authorization_binds_the_prepared_key_owner_and_identity() {
     );
     // The unchanged verifier accepts the real attestation; only synthetic custody refuses.
     assert_eq!(commit(&auth), json!(IMPORT_GATE));
-    let recovery = invoke(&view, "agent_control_create_recovery", json!({})).unwrap();
-    assert_eq!(recovery["requestId"], request);
-    assert_eq!(recovery["pubkey"], pubkey);
-    let changed_edit = json!({"name":"Changed","systemPrompt":"","workspace":dir.path().to_str().unwrap(),
-        "harness":{"command":"buzz-agent","args":[],"model":"chosen","provider":"databricks_v2"},"environment":{}});
-    assert_eq!(
-        invoke(
-            &view,
-            "agent_control_create_resume",
-            json!({"requestId":request,"edit":changed_edit,"auth":auth.to_string()})
-        )
-        .unwrap_err(),
-        json!("Create recovery input changed; use the original settings or discard it")
-    );
-    assert_eq!(
-        invoke(
-            &view,
-            "agent_control_create_discard",
-            json!({"requestId":request})
-        )
-        .unwrap_err(),
-        json!(IMPORT_GATE)
-    );
+    // Existing harnesses retain their ordinary Retry path; no Codex journal
+    // may strand these forms after a credential refusal.
     assert!(invoke(&view, "agent_control_create_recovery", json!({}))
         .unwrap()
-        .is_object());
+        .is_null());
 }
 
 #[tokio::test]
@@ -3051,3 +3030,6 @@ async fn codex_start_rejects_a_controlled_initialize_failure_before_credentials(
         .with(|host| Ok(host.codex_retiring.is_empty()))
         .unwrap());
 }
+
+#[path = "create_tests.rs"]
+mod creation;

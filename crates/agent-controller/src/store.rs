@@ -94,6 +94,19 @@ impl PendingCreateRecovery {
     }
 }
 impl Document {
+    fn inherit_protection(&self, agents: &mut [Agent]) -> Result<()> {
+        let defaults = Binding::decode(self.extra.get(PROTECTION_KEY))?;
+        for agent in agents {
+            if defaults.is_some() && !agent.extra.contains_key(PROTECTION_KEY) {
+                agent.extra.insert(
+                    PROTECTION_KEY.into(),
+                    serde_json::to_value(&defaults)
+                        .map_err(|_| "Could not encode protection defaults")?,
+                );
+            }
+        }
+        Ok(())
+    }
     fn protection_revision(&self) -> Result<u64> {
         match self.extra.get("launchProtectionRevision") {
             None => Ok(0),
@@ -286,7 +299,7 @@ impl Store {
     pub(crate) fn finish_pending_create(
         &mut self,
         pending: &PendingCreateRecovery,
-        agent: Agent,
+        mut agent: Agent,
     ) -> Result<()> {
         let mut doc = self.read()?;
         if doc.pending_create.as_ref() != Some(pending) {
@@ -303,6 +316,7 @@ impl Store {
                 return Err("Recovered agent conflicts with saved settings".into());
             }
         } else {
+            doc.inherit_protection(std::slice::from_mut(&mut agent))?;
             doc.agents.push(agent);
         }
         doc.pending_create = None;
@@ -629,16 +643,7 @@ impl Store {
         repairs: Vec<(String, u64, String)>,
     ) -> Result<()> {
         let mut doc = self.read()?;
-        let defaults = Binding::decode(doc.extra.get(PROTECTION_KEY))?;
-        for agent in &mut agents {
-            if defaults.is_some() && !agent.extra.contains_key(PROTECTION_KEY) {
-                agent.extra.insert(
-                    PROTECTION_KEY.into(),
-                    serde_json::to_value(&defaults)
-                        .map_err(|_| "Could not encode protection defaults")?,
-                );
-            }
-        }
+        doc.inherit_protection(&mut agents)?;
         for (id, revision, instructions) in repairs {
             let agent = doc
                 .agents

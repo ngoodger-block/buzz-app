@@ -641,6 +641,24 @@ test("narrow selected detail keeps a rejected read save and its captured Retry v
   await expect(row.getByRole("img", { name: "Unread" })).toBeVisible();
   await page.evaluate(() => {
     window.inboxReadFailure.armed = true;
+    window.inboxRevealComplete = false;
+    document.addEventListener(
+      "reading-positioned",
+      (event) => {
+        const active = document.activeElement;
+        if (
+          event.detail?.reason === "exact-reveal" &&
+          event.target instanceof HTMLElement &&
+          event.target.getAttribute("aria-label") === "Thread messages" &&
+          active instanceof HTMLElement &&
+          active.matches("[data-message-id]") &&
+          active.textContent.includes("Unread reply 1") &&
+          event.target.contains(active)
+        )
+          window.inboxRevealComplete = true;
+      },
+      { capture: true },
+    );
   });
   try {
     await row.getByRole("button", { name: /^Open / }).click();
@@ -668,6 +686,11 @@ test("narrow selected detail keeps a rejected read save and its captured Retry v
       .locator("[data-message-id]")
       .filter({ hasText: "Unread reply 1" });
     await expect(target).toBeFocused();
+    // Focus happens one frame before the reveal owner marks navigation done.
+    // Moving focus early leaves that owner able to steal it back after Retry.
+    await expect
+      .poll(() => page.evaluate(() => window.inboxRevealComplete))
+      .toBe(true);
     const retry = alert.getByRole("button", { name: "Retry inbox" });
     await retry.focus();
     await page.keyboard.press("Enter");
