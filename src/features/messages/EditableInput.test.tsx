@@ -9,7 +9,15 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
-import { afterEach, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type MockInstance,
+  vi,
+} from "vitest";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { MessageMarkdown } from "./MessageMarkdown";
 import { EditableInput } from "./EditableInput";
@@ -86,43 +94,15 @@ function mount(initial: string | MentionDraft = "", maxLength = 16000) {
   };
 }
 
-it("preserves inline Markdown when a line break reaches the length limit", async () => {
-  const h = mount("_abcd_", 11);
-  act(() => {
-    h.input.setSelectionRange(0, 6);
-    h.input.toggleFormat("bold");
-    h.input.setSelectionRange(3, 3);
+describe("Mac WebKit line breaks", () => {
+  let clear: MockInstance<Selection["removeAllRanges"]>;
+  beforeEach(() => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+    clear = vi.spyOn(Selection.prototype, "removeAllRanges");
   });
-  await h.user.keyboard("{Shift>}{Enter}{/Shift}");
-  expect(h.input.querySelectorAll(":scope > p")).toHaveLength(1);
-  expect(h.input).toHaveValue("_ab\ncd_");
-  expect(h.markdown()).toBe("**_ab\ncd_**");
-});
+  afterEach(() => vi.restoreAllMocks());
 
-it("preserves formatted pasted link source across a line break", async () => {
-  const h = mount();
-  const source = "[label](https://example.com)";
-  paste(h.input, source);
-  act(() => {
-    h.input.setSelectionRange(0, source.length);
-    h.input.toggleFormat("bold");
-    h.input.setSelectionRange(4, 4);
-  });
-  await h.user.keyboard("{Shift>}{Enter}{/Shift}");
-  expect(h.input.querySelectorAll(":scope > p")).toHaveLength(1);
-  expect(h.input).toHaveValue("[lab\nel](https://example.com) ");
-  expect(h.markdown()).toBe("**[lab\nel](https://example.com)** ");
-});
-
-it("refreshes only an accepted collapsed Mac WebKit line-break caret", () => {
-  const platform = vi
-    .spyOn(navigator, "platform", "get")
-    .mockReturnValue("MacIntel");
-  const userAgent = vi
-    .spyOn(navigator, "userAgent", "get")
-    .mockReturnValue("Mozilla/5.0 AppleWebKit/605.1.15");
-  const clear = vi.spyOn(Selection.prototype, "removeAllRanges");
-  try {
+  it("refreshes an accepted collapsed caret and restores it natively", () => {
     const h = mount("ab");
     act(() => h.input.setSelectionRange(1, 1));
     clear.mockClear();
@@ -131,8 +111,16 @@ it("refreshes only an accepted collapsed Mac WebKit line-break caret", () => {
     expect(h.input).toHaveValue("a\nb");
     expect(h.input.selectionStart).toBe(2);
     expect(h.input.selectionEnd).toBe(2);
+    const native = document.getSelection();
+    expect(native?.rangeCount).toBe(1);
+    expect(native?.isCollapsed).toBe(true);
+    expect(native?.anchorNode?.textContent).toBe("a\nb");
+    expect(native?.anchorOffset).toBe(2);
+  });
 
-    act(() => h.input.setSelectionRange(0, h.input.value.length));
+  it("leaves range selections and rejected line breaks alone", () => {
+    const h = mount("ab");
+    act(() => h.input.setSelectionRange(0, 2));
     clear.mockClear();
     act(() => expect(h.input.insertLineBreak()).toBe(true));
     expect(clear).not.toHaveBeenCalled();
@@ -143,17 +131,48 @@ it("refreshes only an accepted collapsed Mac WebKit line-break caret", () => {
     act(() => expect(limited.input.insertLineBreak()).toBe(false));
     expect(clear).not.toHaveBeenCalled();
     expect(limited.input).toHaveValue("ab");
+  });
 
-    userAgent.mockReturnValue("Mozilla/5.0 AppleWebKit/605.1.15 Chrome/120.0");
-    const chromium = mount("ab");
+  it("leaves Chromium alone", () => {
+    vi.spyOn(navigator, "vendor", "get").mockReturnValue("Google Inc.");
+    const h = mount("ab");
+    act(() => h.input.setSelectionRange(1, 1));
     clear.mockClear();
-    act(() => expect(chromium.input.insertLineBreak()).toBe(true));
+    act(() => expect(h.input.insertLineBreak()).toBe(true));
     expect(clear).not.toHaveBeenCalled();
-  } finally {
-    clear.mockRestore();
-    userAgent.mockRestore();
-    platform.mockRestore();
-  }
+  });
+
+  it("preserves inline Markdown when a line break reaches the length limit", async () => {
+    const h = mount("_abcd_", 11);
+    act(() => {
+      h.input.setSelectionRange(0, 6);
+      h.input.toggleFormat("bold");
+      h.input.setSelectionRange(3, 3);
+    });
+    clear.mockClear();
+    await h.user.keyboard("{Shift>}{Enter}{/Shift}");
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(h.input.querySelectorAll(":scope > p")).toHaveLength(1);
+    expect(h.input).toHaveValue("_ab\ncd_");
+    expect(h.markdown()).toBe("**_ab\ncd_**");
+  });
+
+  it("preserves formatted pasted link source across a line break", async () => {
+    const h = mount();
+    const source = "[label](https://example.com)";
+    paste(h.input, source);
+    act(() => {
+      h.input.setSelectionRange(0, source.length);
+      h.input.toggleFormat("bold");
+      h.input.setSelectionRange(4, 4);
+    });
+    clear.mockClear();
+    await h.user.keyboard("{Shift>}{Enter}{/Shift}");
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(h.input.querySelectorAll(":scope > p")).toHaveLength(1);
+    expect(h.input).toHaveValue("[lab\nel](https://example.com) ");
+    expect(h.markdown()).toBe("**[lab\nel](https://example.com)** ");
+  });
 });
 
 /** Exercise ProseMirror's actual MutationObserver/readDOMChange seam, including

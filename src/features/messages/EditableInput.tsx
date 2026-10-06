@@ -74,6 +74,7 @@ import {
   type ComposerInputElement,
 } from "./composer-dom";
 import { isApplePlatform } from "../shortcuts/format";
+import { macWebKit } from "./mac-webkit";
 import { composerLinkUrl } from "./composer-link";
 import { messageLinkParts } from "./message-link-parts";
 import { updatePlainLinks, type PlainLink } from "./composer-link-edit";
@@ -1074,36 +1075,18 @@ export function EditableInput({
             editor.updateState(previous);
             return;
           }
-          // WebKit can leave a stale caret painted after a growing line break.
-          // Clear only its live DOM selection; ProseMirror restores the
-          // mapped selection as it updates the accepted document below.
+          // Mac WebKit can keep painting a stale caret after a line break:
+          // https://discuss.prosemirror.net/t/ghost-cursor-on-safari/9074
+          // Clear the native caret so ProseMirror re-adds it while rendering
+          // the accepted line break below, as prosemirror-view itself did on
+          // Safari before 5daf445 (1.41.0). Remove once upstream repaints it.
           if (
             tr.getMeta("composer-line-break") &&
-            tr.docChanged &&
-            previous.selection instanceof TextSelection &&
             previous.selection.empty &&
-            next.selection instanceof TextSelection &&
-            next.selection.empty &&
-            editable() &&
-            !composing.current &&
-            !editor.composing &&
             editor.hasFocus() &&
-            /^Mac/.test(navigator.platform) &&
-            !navigator.maxTouchPoints &&
-            /AppleWebKit\//.test(navigator.userAgent) &&
-            !/(?:Chrome|Chromium|CriOS|Edg|OPR)\//.test(navigator.userAgent)
-          ) {
-            const native = editor.dom.ownerDocument.getSelection();
-            if (
-              native?.rangeCount === 1 &&
-              native.isCollapsed &&
-              native.anchorNode &&
-              native.focusNode &&
-              editor.dom.contains(native.anchorNode) &&
-              editor.dom.contains(native.focusNode)
-            )
-              native.removeAllRanges();
-          }
+            macWebKit()
+          )
+            editor.dom.ownerDocument.getSelection()?.removeAllRanges();
           editor.updateState(next);
           if (tr.docChanged) {
             scrollAfterTokens.current ||=

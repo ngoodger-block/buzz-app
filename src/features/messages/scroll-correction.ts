@@ -1,8 +1,6 @@
+import { macWebKit } from "./mac-webkit";
+
 const restores = new WeakMap<HTMLElement, () => void>();
-const macWebKit = () =>
-  navigator.platform === "MacIntel" &&
-  !navigator.maxTouchPoints && // desktop-mode iPad keeps its momentum policy
-  navigator.vendor === "Apple Computer, Inc.";
 
 /**
  * Applies an automatic scroll correction. Mac WebKit can leave the corrected
