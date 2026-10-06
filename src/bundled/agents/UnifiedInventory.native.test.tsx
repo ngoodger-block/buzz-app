@@ -100,6 +100,7 @@ it("discovers and retries an unselected joined community through native reads", 
     relayAvailable: true,
     viewer: owner.pubkey,
     profile: { name: "", picture: "" },
+    sync: { known: {}, outbox: [] },
     selected: null,
     memberships: [{ id: joined, name: "Joined" }],
   };

@@ -371,6 +371,7 @@ const joined = (ids: string[], viewer = "de".repeat(32)): ClientSnapshot => ({
   relayAvailable: true,
   viewer,
   profile: { name: "", picture: "" },
+  sync: { known: {}, outbox: [] },
   selected: null,
   memberships: ids.map((id) => ({ id, name: id })),
 });
@@ -1027,6 +1028,7 @@ function archiveSetup(
       relayAvailable: true,
       viewer: viewer.pubkey,
       profile: { name: "", picture: "", about: "" },
+      sync: { known: {}, outbox: [] },
       selected: "wss://relay.example.test",
       memberships: [{ id: "wss://relay.example.test", name: "Example" }],
     },
