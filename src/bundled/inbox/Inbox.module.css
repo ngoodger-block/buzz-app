@@ -164,6 +164,10 @@
   background: var(--surface-inset);
 }
 
+.scopeItemSelected .navigation-item {
+  background: var(--surface-panel);
+}
+
 .scopeSwitch .navigation-item {
   font-size: var(--text-label-sm);
   min-height: var(--size-control-sm);

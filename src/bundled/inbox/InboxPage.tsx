@@ -559,21 +559,23 @@ export function InboxView({
                     { archived: false, label: "Inbox" },
                     { archived: true, label: "Archived" },
                   ].map(({ archived: value, label }) => (
-                    <NavigationItem
+                    <span
                       key={label}
-                      label={label}
-                      variant="pill"
-                      data-selected={archivedView === value || undefined}
-                      aria-current={archivedView === value ? "page" : undefined}
-                      selected={archivedView === value}
-                      onClick={() => {
-                        if (archivedView === value) return;
-                        cancelRetry();
-                        setSelectedTarget(undefined);
-                        setArchivedView(value);
-                        setLimit(50);
-                      }}
-                    />
+                      className={`${styles.scopeItem} ${archivedView === value ? styles.scopeItemSelected : ""}`}
+                    >
+                      <NavigationItem
+                        label={label}
+                        variant="pill"
+                        selected={archivedView === value}
+                        onClick={() => {
+                          if (archivedView === value) return;
+                          cancelRetry();
+                          setSelectedTarget(undefined);
+                          setArchivedView(value);
+                          setLimit(50);
+                        }}
+                      />
+                    </span>
                   ))}
                 </fieldset>
                 <Button
