@@ -164,7 +164,13 @@
   background: var(--surface-inset);
 }
 
-.scopeItemSelected .navigation-item {
+.scopeItem {
+  display: flex;
+  align-items: center;
+}
+
+.scopeItemSelected {
+  border-radius: var(--radius-pill);
   background: var(--surface-panel);
 }
 

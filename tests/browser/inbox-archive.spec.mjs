@@ -60,11 +60,10 @@ test("Inbox archive scope is separate from attention filters and preserves them"
   await archivedButton.click();
   await expect(rows).toHaveCount(1);
   await expect(archivedButton).toHaveAttribute("aria-current", "page");
-  await expect(
-    archivedButton.evaluate(
-      (button) => getComputedStyle(button).backgroundColor,
-    ),
-  ).not.toBe(unselectedScopeBackground);
+  await expect(archivedButton.locator("xpath=..")).toHaveCSS(
+    "background-color",
+    "rgb(255, 255, 255)",
+  );
   await expect(inbox.getByRole("combobox", { name: "Sender" })).toContainText(
     "Agents",
   );
