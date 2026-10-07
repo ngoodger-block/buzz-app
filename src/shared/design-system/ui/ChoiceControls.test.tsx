@@ -13,6 +13,35 @@ const options = [
   { value: "two", label: "Two" },
 ] as const;
 
+it("reuses flattened options when the Select parent rerenders", async () => {
+  const user = userEvent.setup();
+  const groups = [{ label: "", options }];
+  const flatten = vi.spyOn(groups, "flatMap");
+  function Example() {
+    const [, rerender] = useState(0);
+    return (
+      <>
+        <button type="button" onClick={() => rerender((count) => count + 1)}>
+          Rerender Select parent
+        </button>
+        <Select
+          label="Choice"
+          variant="field"
+          value="one"
+          groups={groups}
+          onValueChange={() => {}}
+        />
+      </>
+    );
+  }
+  render(<Example />);
+  expect(flatten).toHaveBeenCalledTimes(1);
+  await user.click(
+    screen.getByRole("button", { name: "Rerender Select parent" }),
+  );
+  expect(flatten).toHaveBeenCalledTimes(1);
+});
+
 it("selects a form option with the keyboard and restores trigger focus", async () => {
   const user = userEvent.setup();
   function Example() {
