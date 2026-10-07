@@ -97,6 +97,50 @@ it("loads Goose models on provider selection, retires stale results, and retries
   }
 });
 
+it("does not replay a failed Goose provider selection when the picker remounts", async () => {
+  const f = controlFixture();
+  const run = vi.fn(async () => {
+    throw Error("Provider sign-in failed");
+  });
+  f.host.models = { begin: async () => 1, run, cancel: async () => {} };
+  const control = createAgentControl(f.host);
+  const draft = {
+    ...agentDraft(f.agent),
+    command: "/local/goose-acp",
+    provider: "anthropic",
+    model: "",
+  };
+  const picker = (providerSelection: number) => (
+    <AgentModelPicker
+      providerSelection={providerSelection}
+      draft={draft}
+      control={control}
+      defaults={undefined}
+      onChange={() => {}}
+    />
+  );
+  const first = render(picker(0));
+  try {
+    first.rerender(picker(1));
+    await waitFor(() => expect(run).toHaveBeenCalledOnce());
+    await screen.findByText(
+      "Could not load models. Retry explicitly; your model entry is unchanged.",
+    );
+    first.unmount();
+
+    const remounted = render(picker(1));
+    try {
+      await act(async () => {});
+      expect(run).toHaveBeenCalledOnce();
+    } finally {
+      remounted.unmount();
+    }
+  } finally {
+    first.unmount();
+    control.dispose();
+  }
+});
+
 it("Goose Databricks v2 browses live IDs and flags an unlisted short name", async () => {
   const f = controlFixture();
   const run = vi.fn(async () => ({

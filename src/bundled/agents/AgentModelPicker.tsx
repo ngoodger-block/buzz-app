@@ -73,6 +73,10 @@ export function AgentModelPicker({
   const [query, setQuery] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const attempted = useRef<string | null>(null);
+  // The settings form survives while presets temporarily unmount this picker.
+  // Treat its current counter as already consumed when mounting so only a new
+  // committed provider choice can initiate Goose discovery.
+  const consumedProviderSelection = useRef(providerSelection);
   // Native resolves absolute executables and write-only provider overrides.
   const supported = !!control.models;
   const highlighted = useRef<ModelCatalog["models"][number] | null>(null);
@@ -254,6 +258,8 @@ export function AgentModelPicker({
   // that request but wait for Browse or Retry, never signing in per keystroke.
   // biome-ignore lint/correctness/useExhaustiveDependencies: only selecting a Goose provider triggers automatic discovery.
   useEffect(() => {
+    if (providerSelection === consumedProviderSelection.current) return;
+    consumedProviderSelection.current = providerSelection;
     if (providerSelection && goose && draft.provider) void run("connect");
   }, [providerSelection]);
   const fresh = catalog?.key === key ? catalog.data : null;

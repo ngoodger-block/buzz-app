@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AgentSettingsFields } from "./AgentSettingsFields";
 import { agentDraft, agentEdit, type AgentDraft } from "./agent-edit";
@@ -566,6 +566,93 @@ it("uses a masked OpenAI key for Goose model lookup and discards unsaved keys on
     await user.clear(custom);
     await user.type(custom, "openai");
     expect(run).toHaveBeenCalledTimes(2);
+  } finally {
+    view.unmount();
+    control.dispose();
+  }
+});
+
+it("does not replay a failed Goose provider choice after a preset custom-path round trip", async () => {
+  const fixture = controlFixture();
+  fixture.data.harnessOptions = [
+    {
+      command: "/usr/local/bin/goose-acp",
+      label: "Goose",
+      defaultArgs: ["acp"],
+      providers: [{ value: "anthropic", label: "Anthropic" }],
+      configurationPolicy: {
+        authentication: "harnessWithOverrides",
+        provider: "selector",
+        supportedModes: [],
+        model: "optional",
+        effortDiscovery: "unknown",
+        selectorEnvironment: {
+          model: "GOOSE_MODEL",
+          provider: "GOOSE_PROVIDER",
+        },
+      },
+    },
+  ];
+  const run = vi.fn(async () => {
+    throw Error("Goose sign-in cancelled");
+  });
+  fixture.host.models = { begin: async () => 1, run, cancel: async () => {} };
+  const control = createAgentControl(fixture.host);
+  const user = userEvent.setup();
+  function Editor() {
+    const [draft, setDraft] = useState(() => ({
+      ...agentDraft(fixture.agent),
+      command: "/custom/goose-acp",
+      args: '["acp"]',
+      provider: "",
+      model: "",
+      environment: {},
+    }));
+    return (
+      <AgentSettingsFields
+        draft={draft}
+        control={control}
+        state={{
+          status: "ready",
+          data: fixture.data,
+          busy: false,
+          error: null,
+        }}
+        disabled={false}
+        onChange={(patch) => setDraft((current) => ({ ...current, ...patch }))}
+      />
+    );
+  }
+  const view = render(<Editor />);
+  try {
+    await user.click(screen.getByRole("combobox", { name: "LLM Provider" }));
+    await user.click(await screen.findByRole("option", { name: "Anthropic" }));
+    await waitFor(() => expect(run).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(
+        screen.getByRole("combobox", { name: "Model" }),
+      ).not.toHaveAttribute("aria-busy", "true"),
+    );
+
+    await user.click(screen.getByRole("combobox", { name: "Harness" }));
+    await user.click(
+      await screen.findByRole("option", {
+        name: "Custom executable / current value",
+      }),
+    );
+    const executable = screen.getByRole("textbox", { name: "Executable" });
+    await user.clear(executable);
+    await user.paste("/custom/hermes-acp");
+    expect(screen.queryByLabelText("Model")).toBeNull();
+
+    await user.clear(screen.getByRole("textbox", { name: "Executable" }));
+    await user.paste("/custom/goose-acp");
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: "Model" })).toBeVisible(),
+    );
+    expect(screen.getByLabelText("Anthropic API key")).toBeVisible();
+    await act(async () => {});
+    expect(run).toHaveBeenCalledOnce();
   } finally {
     view.unmount();
     control.dispose();
