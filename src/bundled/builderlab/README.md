@@ -29,6 +29,15 @@ The bundled `block.builderlab` plugin adds Settings → Integrations → Builder
   creations; **Retry community setup** reuses a pending publication without
   registering or attesting again. Personal space skips relay registration.
   Creation never adds channel membership.
+  **Delete agent** confirms owner-signed kind-5 deletion of the selected
+  community's registration, refreshes discovery, then deletes the runtime through
+  Beekeeper. Personal space only deletes from Beekeeper. Failure leaves the row
+  available for manual retry; an already-missing Beekeeper agent counts as success.
+  Account-scoped deletion tombstones (`buzz.builderlab.deletion.v1:`) persist to
+  prevent stale enrollment from re-registering deleted keys after restart or in
+  another community. They contain only server/account scope and agent pubkey.
+  Deletion does not archive identities, remove channel memberships, erase history,
+  or clean registrations in other communities.
 
 The plugin uses the `BUZZ_BUILDERLAB_URL` [build input](../../../docs/configuration.md#builderlab-url-build-input)
 as its server address and appends `/api/goose`.

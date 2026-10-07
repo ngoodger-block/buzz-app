@@ -92,6 +92,22 @@ export function createAgentClient(
     }
   }
   return {
+    async delete(agent: RemoteAgent, signal: AbortSignal): Promise<void> {
+      if (!agent.id.trim()) throw new Error("Agent ID is unavailable.");
+      const result = await request(
+        "delete-agent",
+        { agent_id: agent.id },
+        signal,
+      );
+      const status = resultStatus(result.status);
+      // NOT_FOUND also confirms completion after a successful delete lost its response.
+      if ([1, "DELETED", 3, "FOUND"].includes(status)) return;
+      throw new Error(
+        [2, "DISABLED"].includes(status)
+          ? "Agent deletion is disabled on this server."
+          : "Agent deletion was not confirmed. Retry Delete agent.",
+      );
+    },
     async register(name: string, signal: AbortSignal): Promise<RemoteAgent> {
       signal.throwIfAborted();
       const agentName = name.trim();

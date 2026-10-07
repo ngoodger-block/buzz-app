@@ -182,6 +182,40 @@ it("does not dispatch signed-out or canceled requests", async () => {
 });
 
 const proof = ["auth", "cd".repeat(32), "", "ef".repeat(64)] as const;
+const remoteAgent = {
+  id: row.agent_id,
+  name: row.agent_name,
+  pubkey: row.agent_pubkey,
+  status: "Active",
+} as const;
+it("deletes through the configured authenticated host", async () => {
+  const h = await fixture();
+  vi.mocked(h.host.request).mockResolvedValue(
+    response({ status: "DELETE_AGENT_STATUS_DELETED" }),
+  );
+  await h.client.delete(remoteAgent, h.signal);
+  expect(h.host.request).toHaveBeenCalledWith({
+    url: "https://builderlab.example/api/goose/v3/beekeeper/delete-agent",
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-BB-Session-Credential": "secret",
+    },
+    body: JSON.stringify({ agent_id: row.agent_id }),
+  });
+});
+it.each([
+  [3, undefined],
+  ["DELETE_AGENT_STATUS_DISABLED", "disabled"],
+  [0, "not confirmed"],
+])("handles deletion status %s", async (status, error) => {
+  const h = await fixture();
+  vi.mocked(h.host.request).mockResolvedValue(response({ status }));
+  const deleting = h.client.delete(remoteAgent, h.signal);
+  if (error) await expect(deleting).rejects.toThrow(error);
+  else await expect(deleting).resolves.toBeUndefined();
+});
 it("registers with a saved UUID and attests through the existing owner signer", async () => {
   const h = await fixture();
   h.host.prepareRemoteAgentAuthorization = vi.fn(async () => proof);

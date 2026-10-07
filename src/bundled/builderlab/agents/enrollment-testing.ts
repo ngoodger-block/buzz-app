@@ -16,6 +16,7 @@ import { deferred } from "../test-helpers";
 export function enrollmentFixture(
   login: OAuthSession,
   selected: string | null = "https://community.example",
+  kinds: readonly number[] = [30177, 5],
 ) {
   const identity = keypair();
   const viewer = identity.pubkey;
@@ -35,8 +36,21 @@ export function enrollmentFixture(
     events.push(event);
   });
   const query = vi.fn(async (filters: readonly ReadFilter[]) =>
-    events.filter((event) =>
-      filters.some((filter) => matchesEvent(event, filter)),
+    events.filter(
+      (event) =>
+        filters.some((filter) => matchesEvent(event, filter)) &&
+        !events.some(
+          (deletion) =>
+            deletion.kind === 5 &&
+            deletion.pubkey === event.pubkey &&
+            deletion.created_at >= event.created_at &&
+            deletion.tags.some(
+              ([key, value]) =>
+                key === "a" &&
+                value ===
+                  `${event.kind}:${event.pubkey}:${event.tags.find(([name]) => name === "d")?.[1]}`,
+            ),
+        ),
     ),
   );
   const start = () =>
@@ -47,7 +61,7 @@ export function enrollmentFixture(
         scope: "https://community.example",
         query,
         media: () => undefined,
-        writer: { kinds: [30177], sign, publish },
+        writer: { kinds, sign, publish },
       },
       { outboxStorage: storage },
     );

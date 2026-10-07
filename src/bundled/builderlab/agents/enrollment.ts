@@ -6,16 +6,31 @@ import type { RelayData } from "../../../features/relay/service";
 import { relayPartition } from "../../../features/relay/partition";
 import { oauthTarget } from "../oauth/browser";
 import type { OAuthSession } from "../oauth/session";
-import type { RemoteAgent } from "./client";
+import type { AgentClient, RemoteAgent } from "./client";
 
 const PREFIX = "buzz.builderlab.enrollment.v1:";
+const DELETION_PREFIX = "buzz.builderlab.deletion.v1:";
 
-/** Builderlab owns creation intent; the session owns signing and durable delivery. */
+/** Builderlab owns agent intent; the session owns signing and durable delivery. */
 export function createEnrollment(
   relay: RelayData,
   community: CommunityReader,
   login: OAuthSession,
 ) {
+  function deletionKey(pubkey: string) {
+    return (
+      DELETION_PREFIX +
+      JSON.stringify([oauthTarget(), login.credential().account.subject]) +
+      ":" +
+      pubkey
+    );
+  }
+  function deleting(agent: RemoteAgent) {
+    const value = localStorage.getItem(deletionKey(agent.pubkey));
+    if (value !== null && value !== "deleting")
+      throw new Error("Saved agent deletion is invalid.");
+    return value === "deleting";
+  }
   function scope() {
     const selected = community.snapshot();
     if (!selected.selected) return;
@@ -37,18 +52,19 @@ export function createEnrollment(
         ]),
     };
   }
-  function capture() {
+  function capture(kind = 30177) {
     const identity = scope();
     if (!identity) return;
     const connection = relay.snapshot();
+    const outbox = connection.session.outbox;
     if (
       connection.status !== "ready" ||
       connection.scope !== relayPartition(identity.url, identity.viewer) ||
       connection.viewer !== identity.viewer ||
-      !connection.session.outbox?.supports(30177)
+      !outbox?.supports(kind)
     )
-      throw new Error("Connect to this community before registering an agent.");
-    return { ...identity, connection };
+      throw new Error("Connect to this community before changing an agent.");
+    return { ...identity, connection, outbox };
   }
   type Enrollment = ReturnType<typeof capture>;
   function current(context: Enrollment) {
@@ -70,6 +86,7 @@ export function createEnrollment(
     if (!identity) return [];
     return rows
       .filter((row) => {
+        if (deleting(row)) return false;
         const value = localStorage.getItem(
           storageKey(identity.key, row.pubkey),
         );
@@ -80,6 +97,8 @@ export function createEnrollment(
       .map((row) => row.pubkey);
   }
   function remember(context: Enrollment, agent: RemoteAgent) {
+    if (deleting(agent))
+      throw new Error("Agent deletion is pending. Retry Delete agent.");
     if (context)
       localStorage.setItem(storageKey(context.key, agent.pubkey), "pending");
   }
@@ -90,7 +109,8 @@ export function createEnrollment(
     active: () => boolean,
   ) {
     if (!context) return;
-    const allowed = () => !signal.aborted && active() && current(context);
+    const allowed = () =>
+      !signal.aborted && active() && current(context) && !deleting(agent);
     const check = () => {
       signal.throwIfAborted();
       if (!allowed())
@@ -100,8 +120,7 @@ export function createEnrollment(
     if (agent.status !== "Active")
       throw new Error("Finish agent activation before community setup.");
     const { session } = context.connection;
-    const outbox = session.outbox;
-    if (!outbox) throw new Error("Community publication is unavailable.");
+    const { outbox } = context;
     await outbox.ready();
     check();
     const recoveryKey = `builderlab:register:${agent.pubkey}`;
@@ -195,11 +214,79 @@ export function createEnrollment(
   return {
     snapshot: relay.snapshot,
     subscribe: relay.subscribe,
+    deleting,
     capture,
     current,
     pending,
     remember,
     publish,
+    async remove(
+      agent: RemoteAgent,
+      client: Pick<AgentClient, "delete">,
+      signal: AbortSignal,
+      active: () => boolean,
+    ) {
+      const credential = login.credential();
+      const context = capture(5);
+      const allowed = () =>
+        !signal.aborted &&
+        active() &&
+        login.snapshot().status === "signed-in" &&
+        login.credential() === credential &&
+        current(context);
+      const check = () => {
+        signal.throwIfAborted();
+        if (!allowed())
+          throw new DOMException("Community or account changed.", "AbortError");
+      };
+      check();
+      if (context) {
+        await context.outbox.ready();
+        check();
+      }
+      // Keep this account-scoped tombstone after success too: stale enrollment
+      // intent in any community/window must never re-register the deleted key.
+      localStorage.setItem(deletionKey(agent.pubkey), "deleting");
+      if (context) {
+        const { session } = context.connection;
+        const { outbox } = context;
+        // Coordinate deletion is repeatable. Each manual attempt gets a fresh
+        // event rather than reusing a possibly expired registration-style receipt.
+        const id = outbox.send(
+          {
+            kind: 5,
+            content: "",
+            tags: [["a", `30177:${context.viewer}:${agent.pubkey}`]],
+          },
+          undefined,
+          allowed,
+        );
+        try {
+          await delivered(
+            outbox,
+            id,
+            signal,
+            "Record deletion is not confirmed. Retry Delete agent.",
+          );
+        } finally {
+          if (
+            outbox.snapshot().find((item) => item.event.id === id)?.delivery !==
+            "sending"
+          )
+            await outbox.dismiss(id);
+        }
+        check();
+        if (session.agentLibrary.snapshot().status === "loading")
+          await session.agentLibrary.refresh();
+        check();
+        await session.agentChoices.refresh();
+        check();
+      }
+      await client.delete(agent, signal);
+      check();
+      if (context)
+        localStorage.removeItem(storageKey(context.key, agent.pubkey));
+    },
     async recover(
       rows: readonly RemoteAgent[],
       signal: AbortSignal,
@@ -217,7 +304,12 @@ export function createEnrollment(
 }
 export type AgentEnrollment = ReturnType<typeof createEnrollment>;
 
-function delivered(outbox: Outbox, id: string, signal: AbortSignal) {
+function delivered(
+  outbox: Outbox,
+  id: string,
+  signal: AbortSignal,
+  failure = "Community registration is not confirmed. Retry community setup.",
+) {
   return new Promise<void>((resolve, reject) => {
     let stop = () => {};
     const finish = (error?: unknown) => {
@@ -230,12 +322,7 @@ function delivered(outbox: Outbox, id: string, signal: AbortSignal) {
       const item = outbox.snapshot().find((item) => item.event.id === id);
       if (item?.delivery === "accepted" || item?.delivery === "seen") finish();
       else if (item?.delivery !== "sending")
-        finish(
-          new Error(
-            item?.error ??
-              "Community registration is not confirmed. Retry community setup.",
-          ),
-        );
+        finish(new Error(item?.error ?? failure));
     };
     stop = outbox.subscribe(inspect);
     signal.addEventListener("abort", abort, { once: true });

@@ -4,6 +4,7 @@ import { deferred } from "../test-helpers";
 import { createEnrollment } from "./enrollment";
 import { enrollmentFixture } from "./enrollment-testing";
 import type { RemoteAgent } from "./client";
+import { PublishRejected } from "../../../features/relay/outbox";
 
 const agent: RemoteAgent = {
   id: "one",
@@ -27,15 +28,20 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });
-async function fixture() {
+async function fixture(kinds?: readonly number[]) {
   const login = createOAuthSession(async () => ({
     value: "secret",
     account: { subject: "user", email: "a@example.com" },
   }));
   await login.signIn();
-  const h = enrollmentFixture(login);
+  const h = enrollmentFixture(login, "https://community.example", kinds);
   owners.push(h);
-  return { ...h, login, signal: new AbortController().signal };
+  return {
+    ...h,
+    login,
+    signal: new AbortController().signal,
+    client: { delete: vi.fn(async () => {}) },
+  };
 }
 
 it("resumes a saved enrollment with the original signed event after a lost receipt", async () => {
@@ -72,7 +78,7 @@ it("recovers the activation-to-outbox gap only for intended Active agents", asyn
 });
 
 it.each(["community", "account", "card", "abort"])(
-  "fences %s changes while relay signing is held",
+  "fences %s changes while registration signing is held",
   async (change) => {
     const h = await fixture();
     const gate = deferred<void>();
@@ -188,7 +194,7 @@ it.each(["receipt dismissal", "intent removal"])(
   },
 );
 
-it("does not recover another verified account's enrollment intent", async () => {
+it("keeps enrollment and deletion intent scoped to the verified account", async () => {
   const h = await fixture();
   h.enrollment.remember(h.enrollment.capture(), agent);
   const other = createOAuthSession(async () => ({
@@ -200,4 +206,146 @@ it("does not recover another verified account's enrollment intent", async () => 
   expect(enrollment.pending([agent])).toEqual([]);
   await enrollment.recover([agent], h.signal, () => true);
   expect(h.publish).not.toHaveBeenCalled();
+  await h.enrollment.remove(agent, h.client, h.signal, () => true);
+  expect(h.enrollment.deleting(agent)).toBe(true);
+  expect(enrollment.deleting(agent)).toBe(false);
+});
+
+it.each([new PublishRejected("denied"), new Error("receipt lost")])(
+  "does not delete the runtime after unconfirmed relay delivery: %s",
+  async (failure) => {
+    const h = await fixture();
+    h.publish.mockRejectedValueOnce(failure);
+    await expect(
+      h.enrollment.remove(agent, h.client, h.signal, () => true),
+    ).rejects.toThrow(failure.message);
+    expect(h.client.delete).not.toHaveBeenCalled();
+    expect(h.enrollment.deleting(agent)).toBe(true);
+    expect(h.relay.snapshot().session.outbox?.snapshot()).toEqual([]);
+  },
+);
+
+it("keeps deletion intent across restart and retries with a fresh event after backend failure", async () => {
+  const startedAt = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(startedAt);
+  const h = await fixture();
+  h.enrollment.remember(h.enrollment.capture(), agent);
+  await h.enrollment.recover([agent], h.signal, () => true);
+  h.enrollment.remember(h.enrollment.capture(), agent);
+  h.client.delete.mockRejectedValueOnce(new Error("backend offline"));
+  await expect(
+    h.enrollment.remove(agent, h.client, h.signal, () => true),
+  ).rejects.toThrow("backend offline");
+  expect(h.relay.snapshot().session.agentChoices.snapshot().identities).toEqual(
+    [],
+  );
+  const first = h.events.find((event) => event.kind === 5);
+  expect(first).toMatchObject({
+    pubkey: h.viewer,
+    content: "",
+    tags: [
+      ["a", `30177:${h.viewer}:${agent.pubkey}`],
+      ["client-id", expect.any(String)],
+    ],
+  });
+  await h.restart();
+  const restored = createEnrollment(h.relay, h.reader, h.login);
+  expect(restored.pending([agent])).toEqual([]);
+  await restored.recover([agent], h.signal, () => true);
+  expect(h.events.map((event) => event.kind)).toEqual([30177, 5]);
+  clock.mockReturnValue(startedAt + 20 * 60_000);
+  await restored.remove(agent, h.client, h.signal, () => true);
+  const second = h.events.at(-1);
+  expect(second?.kind).toBe(5);
+  expect(second?.id).not.toBe(first?.id);
+  expect(second?.created_at).toBe((first?.created_at ?? 0) + 20 * 60);
+  expect(h.client.delete).toHaveBeenCalledTimes(2);
+  // A stale row/intent in another window remains fenced even after successful deletion.
+  expect(restored.deleting(agent)).toBe(true);
+  await expect(
+    restored.publish(restored.capture(), agent, h.signal, () => true),
+  ).rejects.toMatchObject({ name: "AbortError" });
+});
+
+it.each(["community", "account", "card", "abort"])(
+  "does not contact Builderlab after %s changes during deletion publication",
+  async (change) => {
+    const h = await fixture();
+    const gate = deferred<void>();
+    const publish = h.publish.getMockImplementation();
+    if (!publish) throw new Error("Missing publisher");
+    h.publish.mockImplementationOnce(async (event) => {
+      await gate.promise;
+      return publish(event);
+    });
+    let active = true;
+    const controller = new AbortController();
+    const removing = h.enrollment
+      .remove(agent, h.client, controller.signal, () => active)
+      .catch((error) => error);
+    try {
+      await vi.waitFor(() => expect(h.publish).toHaveBeenCalledTimes(1));
+      if (change === "community") h.setCommunity("https://other.example");
+      if (change === "account") h.login.signOut();
+      if (change === "card") active = false;
+      if (change === "abort") controller.abort();
+      gate.resolve();
+      expect(await removing).toMatchObject({ name: "AbortError" });
+      expect(h.client.delete).not.toHaveBeenCalled();
+    } finally {
+      gate.resolve();
+      await removing;
+    }
+  },
+);
+
+it("fences a registration still signing in another window", async () => {
+  const h = await fixture();
+  h.enrollment.remember(h.enrollment.capture(), agent);
+  const gate = deferred<void>();
+  const sign = h.sign.getMockImplementation();
+  if (!sign) throw new Error("Missing signer");
+  h.sign.mockImplementationOnce(async (event) => {
+    await gate.promise;
+    return sign(event);
+  });
+  const enrolling = h.enrollment
+    .recover([agent], h.signal, () => true)
+    .catch((error) => error);
+  try {
+    await vi.waitFor(() => expect(h.sign).toHaveBeenCalledTimes(1));
+    const otherWindow = createEnrollment(h.relay, h.reader, h.login);
+    await otherWindow.remove(agent, h.client, h.signal, () => true);
+    gate.resolve();
+    expect(await enrolling).toBeInstanceOf(Error);
+    expect(h.events.map((event) => event.kind)).toEqual([5]);
+    expect(h.client.delete).toHaveBeenCalledTimes(1);
+  } finally {
+    gate.resolve();
+    await enrolling;
+  }
+});
+
+it("fails before any write if deletion intent cannot be persisted", async () => {
+  const h = await fixture();
+  vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+    throw new Error("storage full");
+  });
+  await expect(
+    h.enrollment.remove(agent, h.client, h.signal, () => true),
+  ).rejects.toThrow("storage full");
+  expect(h.events).toEqual([]);
+  expect(h.client.delete).not.toHaveBeenCalled();
+});
+
+it("does not save deletion intent when the selected relay cannot publish kind 5", async () => {
+  const h = await fixture([30177]);
+  h.enrollment.remember(h.enrollment.capture(), agent);
+  await expect(
+    h.enrollment.remove(agent, h.client, h.signal, () => true),
+  ).rejects.toThrow("Connect");
+  expect(h.enrollment.deleting(agent)).toBe(false);
+  expect(h.enrollment.pending([agent])).toEqual([agent.pubkey]);
+  expect(h.events).toEqual([]);
+  expect(h.client.delete).not.toHaveBeenCalled();
 });

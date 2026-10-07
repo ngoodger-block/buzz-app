@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../../../shared/design-system/ui/Button";
 import { Field } from "../../../shared/design-system/ui/Field";
 import { Input } from "../../../shared/design-system/ui/Input";
+import { AlertDialog } from "../../../shared/design-system/ui/AlertDialog";
 import type { LoginSnapshot, OAuthSession } from "../oauth/session";
 import type { AgentClient, RemoteAgent } from "./client";
 import type { AgentEnrollment } from "./enrollment";
@@ -51,6 +52,8 @@ function AgentList({
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<readonly string[]>([]);
   const [confirmed, setConfirmed] = useState<readonly string[]>([]);
+  const [deleting, setDeleting] = useState<RemoteAgent>();
+  const [removing, setRemoving] = useState<readonly string[]>([]);
   const operation = useRef<AbortController | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: Account changes and explicit refreshes must restart the read.
   useEffect(() => {
@@ -63,12 +66,19 @@ function AgentList({
     setError(undefined);
     setPending([]);
     setConfirmed([]);
+    setDeleting(undefined);
+    setRemoving([]);
     const current = () => !controller.signal.aborted && active();
     void (async () => {
       try {
         const rows = await client.list(controller.signal);
         if (!current()) return;
         setAgents(rows);
+        setRemoving(
+          rows
+            .filter((row) => enrollment.deleting(row))
+            .map((row) => row.pubkey),
+        );
         const intended = enrollment.pending(rows);
         setPending(intended);
         setLoading(false);
@@ -95,18 +105,31 @@ function AgentList({
     })();
     return () => controller.abort();
   }, [client, account, revision, connection, enrollment]);
-  const change = async (agent?: RemoteAgent) => {
+  const run = async (
+    work: (signal: AbortSignal, current: () => boolean) => Promise<void>,
+    failure: string,
+  ) => {
     const signal = operation.current?.signal;
     if (!signal || signal.aborted || busy || loading || !active()) return;
     const current = () => !signal.aborted && active();
     setBusy(true);
     setError(undefined);
-    const show = (row: RemoteAgent) =>
-      setAgents((rows) => [
-        ...(rows ?? []).filter((item) => item.id !== row.id),
-        row,
-      ]);
     try {
+      await work(signal, current);
+    } catch (reason) {
+      if (current())
+        setError(reason instanceof Error ? reason.message : failure);
+    } finally {
+      if (current()) setBusy(false);
+    }
+  };
+  const change = (agent?: RemoteAgent) =>
+    run(async (signal, current) => {
+      const show = (row: RemoteAgent) =>
+        setAgents((rows) => [
+          ...(rows ?? []).filter((item) => item.id !== row.id),
+          row,
+        ]);
       const context = enrollment.capture();
       if (agent?.status === "Active") {
         const id = agent.id;
@@ -131,7 +154,10 @@ function AgentList({
           : await client.attest(
               registered,
               signal,
-              () => active() && enrollment.current(context),
+              () =>
+                active() &&
+                enrollment.current(context) &&
+                !enrollment.deleting(registered),
               context?.viewer,
             );
       if (!current() || !enrollment.current(context)) return;
@@ -141,16 +167,17 @@ function AgentList({
         setPending((rows) => rows.filter((key) => key !== ready.pubkey));
         if (context) setConfirmed((rows) => [...rows, ready.pubkey]);
       }
-    } catch (reason) {
-      if (current())
-        setError(
-          reason instanceof Error
-            ? reason.message
-            : "Could not create the agent. Retry the same name.",
-        );
-    } finally {
-      if (current()) setBusy(false);
-    }
+    }, "Could not create the agent. Retry the same name.");
+  const remove = (agent: RemoteAgent) => {
+    setDeleting(undefined);
+    return run(async (signal, current) => {
+      setRemoving((rows) => [...new Set([...rows, agent.pubkey])]);
+      setConfirmed((rows) => rows.filter((key) => key !== agent.pubkey));
+      await enrollment.remove(agent, client, signal, active);
+      if (current()) {
+        setRevision((value) => value + 1);
+      }
+    }, "Could not delete the agent. Retry Delete agent.");
   };
   return (
     <section
@@ -210,9 +237,15 @@ function AgentList({
               <span className="break-all text-mono text-secondary">
                 {agent.pubkey}
               </span>
-              {pending.includes(agent.pubkey) && (
+              {pending.includes(agent.pubkey) &&
+                !removing.includes(agent.pubkey) && (
+                  <p className="text-body-sm text-secondary">
+                    Community registration pending.
+                  </p>
+                )}
+              {removing.includes(agent.pubkey) && (
                 <p className="text-body-sm text-secondary">
-                  Community registration pending.
+                  Deletion pending. Retry Delete agent.
                 </p>
               )}
               {confirmed.includes(agent.pubkey) && (
@@ -220,26 +253,38 @@ function AgentList({
                   Registration confirmed in this community.
                 </p>
               )}
-              {agent.status === "Active" && pending.includes(agent.pubkey) && (
-                <Button
-                  variant="outline"
-                  disabled={busy || loading}
-                  onClick={() => void change(agent)}
-                >
-                  Retry community setup
-                </Button>
-              )}
-              {agent.status === "Unattested" && (
-                <div>
+              {agent.status === "Active" &&
+                pending.includes(agent.pubkey) &&
+                !removing.includes(agent.pubkey) && (
                   <Button
                     variant="outline"
                     disabled={busy || loading}
                     onClick={() => void change(agent)}
                   >
-                    Finish setup
+                    Retry community setup
                   </Button>
-                </div>
-              )}
+                )}
+              {agent.status === "Unattested" &&
+                !removing.includes(agent.pubkey) && (
+                  <div>
+                    <Button
+                      variant="outline"
+                      disabled={busy || loading}
+                      onClick={() => void change(agent)}
+                    >
+                      Finish setup
+                    </Button>
+                  </div>
+                )}
+              <div>
+                <Button
+                  variant="destructive"
+                  disabled={busy || loading}
+                  onClick={() => setDeleting(agent)}
+                >
+                  Delete agent
+                </Button>
+              </div>
             </li>
           ))}
         </ul>
@@ -256,6 +301,25 @@ function AgentList({
           {error ? "Retry" : "Refresh agents"}
         </Button>
       </div>
+      {deleting && (
+        <AlertDialog
+          title={`Delete ${deleting.name}?`}
+          description="This permanently deletes the remote agent from Builderlab. Its registration is removed from the selected community first. Channel memberships and past messages remain. With no community selected, only Builderlab is updated."
+          onClose={() => setDeleting(undefined)}
+          actions={
+            <>
+              <Button onClick={() => setDeleting(undefined)}>Cancel</Button>
+              <Button
+                variant="destructive"
+                disabled={busy || loading}
+                onClick={() => void remove(deleting)}
+              >
+                Delete agent
+              </Button>
+            </>
+          }
+        />
+      )}
     </section>
   );
 }

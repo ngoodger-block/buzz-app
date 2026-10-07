@@ -17,6 +17,7 @@ import { createAgentClient } from "./client";
 import { RemoteAgents } from "./RemoteAgents";
 import { enrollmentFixture } from "./enrollment-testing";
 import { PublishRejected } from "../../../features/relay/outbox";
+import { StrictMode } from "react";
 
 const enrollments: ReturnType<typeof enrollmentFixture>[] = [];
 
@@ -69,6 +70,118 @@ async function fixture(selected: string | null = null) {
   };
 }
 afterEach(() => vi.unstubAllEnvs());
+it("confirms deletion, waits for the relay, and keeps a failed backend deletion retryable", async () => {
+  const h = await fixture("https://community.example");
+  let deleted = false;
+  let attempts = 0;
+  h.request.mockImplementation(async (input) => {
+    if (!input.url.endsWith("/delete-agent"))
+      return response(deleted ? [] : [row]);
+    attempts++;
+    if (attempts === 1) return response([], 503);
+    deleted = true;
+    return { status: 200, headers: {}, body: '{"status":1}' };
+  });
+  const publication = deferred<void>();
+  const publish = h.community.publish.getMockImplementation();
+  if (!publish) throw new Error("Missing publisher");
+  h.community.publish.mockImplementationOnce(async (event) => {
+    await publication.promise;
+    return publish(event);
+  });
+  render(
+    <StrictMode>
+      <RemoteAgents {...h} active={() => true} />
+    </StrictMode>,
+  );
+  await screen.findByText("Helper · Active");
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Refresh agents" }),
+    ).toBeEnabled(),
+  );
+  const user = userEvent.setup();
+  const confirm = async () => {
+    await user.click(screen.getByRole("button", { name: "Delete agent" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Delete Helper?" });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Delete agent" }),
+    );
+  };
+  try {
+    await confirm();
+    await waitFor(() => expect(h.community.publish).toHaveBeenCalledTimes(1));
+    expect(attempts).toBe(0);
+    expect(screen.getByRole("button", { name: "Delete agent" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Refresh agents" }),
+    ).toBeDisabled();
+    await act(async () => publication.resolve());
+    expect(await screen.findByRole("alert")).toHaveTextContent("HTTP 503");
+    expect(screen.getByText("Helper · Active")).toBeInTheDocument();
+    expect(
+      screen.getByText("Deletion pending. Retry Delete agent."),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Delete agent" }),
+      ).toBeEnabled(),
+    );
+    await confirm();
+    expect(
+      await screen.findByText("No remote agents yet."),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Refresh agents" }),
+      ).toBeEnabled(),
+    );
+    expect(attempts).toBe(2);
+  } finally {
+    await act(async () => publication.resolve());
+  }
+});
+
+it("allows canceling confirmation and deletes directly from Builderlab in Personal space", async () => {
+  const h = await fixture();
+  render(<RemoteAgents {...h} active={() => true} />);
+  await screen.findByText("Helper · Active");
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Refresh agents" }),
+    ).toBeEnabled(),
+  );
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Delete agent" }));
+  await user.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", {
+      name: "Cancel",
+    }),
+  );
+  expect(h.request).toHaveBeenCalledTimes(1);
+  h.request
+    .mockResolvedValueOnce({
+      status: 200,
+      headers: {},
+      body: '{"status":"DELETE_AGENT_STATUS_NOT_FOUND"}',
+    })
+    .mockResolvedValue(response([]));
+  await user.click(screen.getByRole("button", { name: "Delete agent" }));
+  await user.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", {
+      name: "Delete agent",
+    }),
+  );
+  expect(await screen.findByText("No remote agents yet.")).toBeInTheDocument();
+  // Complete the list refresh before asserting no relay work happened.
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Refresh agents" }),
+    ).toBeEnabled(),
+  );
+  expect(h.community.sign).not.toHaveBeenCalled();
+  expect(h.community.publish).not.toHaveBeenCalled();
+});
 it("loads automatically, refreshes and hides account data on sign-out", async () => {
   const h = await fixture();
   render(<RemoteAgents {...h} active={() => true} />);
@@ -370,9 +483,13 @@ it("does not attest or show a held registration after sign-out", async () => {
   ).not.toBeInTheDocument();
 });
 
-it.each(["registration", "signing"])(
-  "does not continue creation when card ownership is lost during %s before effect cleanup",
-  async (stage) => {
+it.each([
+  { stage: "registration", cause: "ownership loss" },
+  { stage: "signing", cause: "ownership loss" },
+  { stage: "signing", cause: "deletion" },
+])(
+  "does not continue creation after $cause during $stage",
+  async ({ stage, cause }) => {
     const h = await fixture();
     let active = true;
     render(<RemoteAgents {...h} active={() => active} />);
@@ -404,21 +521,43 @@ it.each(["registration", "signing"])(
       await user.click(screen.getByRole("button", { name: "Create agent" }));
       await waitFor(() => {
         expect(h.request).toHaveBeenCalledTimes(2);
-        expect(h.authorize).toHaveBeenCalledTimes(stage === "signing" ? 1 : 0);
+        expect(h.authorize).toHaveBeenCalledTimes(
+          stage === "registration" ? 0 : 1,
+        );
       });
-      // Revoke ownership without unmounting or signing out: the signal is still live.
-      active = false;
+      if (cause === "deletion") {
+        // A different window deletes the already-registered identity while this
+        // window is waiting for owner authorization.
+        await h.enrollment.remove(
+          {
+            id: "two",
+            name: "Another",
+            pubkey: row.agent_pubkey,
+            status: "Unattested",
+          },
+          { delete: vi.fn(async () => {}) },
+          new AbortController().signal,
+          () => true,
+        );
+      } else {
+        // Revoke ownership before effect cleanup: the signal is still live.
+        active = false;
+      }
       await act(async () => {
         registration.resolve(registered);
         signing.resolve(proof);
       });
       expect(h.request).toHaveBeenCalledTimes(2);
-      expect(h.authorize).toHaveBeenCalledTimes(stage === "signing" ? 1 : 0);
+      expect(h.authorize).toHaveBeenCalledTimes(
+        stage === "registration" ? 0 : 1,
+      );
       expect(screen.queryAllByText("Another · Unattested")).toHaveLength(
-        stage === "signing" ? 1 : 0,
+        stage === "registration" ? 0 : 1,
       );
       expect(screen.queryByText("Another · Active")).not.toBeInTheDocument();
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      if (cause === "deletion")
+        expect(screen.getByRole("alert")).toBeInTheDocument();
+      else expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     } finally {
       registration.resolve(registered);
       signing.resolve(proof);
